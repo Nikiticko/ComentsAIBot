@@ -2,7 +2,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from comments_ai_bot.core.types import LogLevel
-from comments_ai_bot.db.models import Channel, Log
+from comments_ai_bot.db.models import Channel, Log, Post
 
 
 class ChannelRepository:
@@ -79,3 +79,45 @@ class LogRepository:
     async def latest(self, limit: int = 10) -> list[Log]:
         result = await self.session.execute(select(Log).order_by(Log.id.desc()).limit(limit))
         return list(result.scalars().all())
+
+
+class PostRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def upsert(
+        self,
+        *,
+        channel_id: int,
+        telegram_post_id: int,
+        text: str | None,
+        views_count: int | None,
+        status: str,
+        skip_reason: str | None = None,
+    ) -> Post:
+        result = await self.session.execute(
+            select(Post).where(
+                Post.channel_id == channel_id,
+                Post.telegram_post_id == telegram_post_id,
+            )
+        )
+        post = result.scalar_one_or_none()
+
+        if post is None:
+            post = Post(
+                channel_id=channel_id,
+                telegram_post_id=telegram_post_id,
+                text=text,
+                views_count=views_count,
+                status=status,
+                skip_reason=skip_reason,
+            )
+            self.session.add(post)
+        else:
+            post.text = text
+            post.views_count = views_count
+            post.status = status
+            post.skip_reason = skip_reason
+
+        await self.session.flush()
+        return post

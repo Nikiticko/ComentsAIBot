@@ -9,6 +9,7 @@ from comments_ai_bot.admin_bot.keyboards import cancel_keyboard, channel_actions
 from comments_ai_bot.admin_bot.states import ChannelStates
 from comments_ai_bot.db.repositories import ChannelRepository, LogRepository
 from comments_ai_bot.db.session import async_session_factory
+from comments_ai_bot.monitoring.manual_scan import ManualPostScanner
 
 router = Router()
 USERNAME_RE = re.compile(r"^@[A-Za-z0-9_]{5,32}$")
@@ -157,6 +158,46 @@ async def list_logs(callback: CallbackQuery) -> None:
     text = "\n\n".join(f"{log.created_at:%Y-%m-%d %H:%M} [{log.level}] {log.message}" for log in logs)
     await callback.message.answer(text, reply_markup=main_menu())
     await callback.answer()
+
+
+@router.callback_query(F.data == "posts:scan_high_views")
+async def scan_high_view_posts(callback: CallbackQuery) -> None:
+    await callback.answer("Парсинг запущен")
+    await callback.message.answer(
+        "Начал парсить активные каналы за последние 24 часа. Это может занять немного времени."
+    )
+
+    try:
+        result = await ManualPostScanner().scan_high_view_posts()
+    except RuntimeError as error:
+        await callback.message.answer(str(error), reply_markup=main_menu())
+        return
+
+    summary = (
+        "Парсинг завершён.\n"
+        f"Каналов: {result.channels_total}\n"
+        f"Ошибок каналов: {result.channels_failed}\n"
+        f"Период: последние {result.scan_hours} часа\n"
+        f"Постов проверено: {result.posts_checked}\n"
+        f"Постов сохранено: {result.posts_saved}\n"
+        f"Постов 20к+: {len(result.high_view_posts)}"
+    )
+    await callback.message.answer(summary, reply_markup=main_menu())
+
+    if not result.high_view_posts:
+        return
+
+    lines = []
+    for post in result.high_view_posts[:30]:
+        text_preview = (post.text or "").replace("\n", " ").strip()
+        if len(text_preview) > 80:
+            text_preview = f"{text_preview[:77]}..."
+        line = f"{post.channel_username} | {post.views_count} просмотров\n{post.url}"
+        if text_preview:
+            line = f"{line}\n{text_preview}"
+        lines.append(line)
+
+    await callback.message.answer("\n\n".join(lines))
 
 
 @router.callback_query(F.data == "settings:show")

@@ -14,5 +14,7 @@ venv/
 
 data/*.db
 data/*.db-*
+data/*.session
+data/*.session-journal
 
 .DS_Store

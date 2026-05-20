@@ -6,6 +6,7 @@ def main_menu() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="Добавить канал", callback_data="channel:add")],
             [InlineKeyboardButton(text="Список каналов", callback_data="channel:list")],
+            [InlineKeyboardButton(text="Посты 20к+", callback_data="posts:scan_high_views")],
             [InlineKeyboardButton(text="Логи", callback_data="logs:list")],
             [InlineKeyboardButton(text="Настройки", callback_data="settings:show")],
         ]
