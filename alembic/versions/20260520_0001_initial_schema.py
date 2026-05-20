@@ -9,7 +9,6 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects import postgresql
 
 revision: str = "20260520_0001"
 down_revision: str | None = None
@@ -39,7 +38,7 @@ def upgrade() -> None:
         sa.Column("message", sa.Text(), nullable=False),
         sa.Column("entity_type", sa.String(length=100), nullable=True),
         sa.Column("entity_id", sa.Integer(), nullable=True),
-        sa.Column("payload", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column("payload", sa.JSON(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.PrimaryKeyConstraint("id"),
     )
@@ -50,7 +49,7 @@ def upgrade() -> None:
         "settings",
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("key", sa.String(length=255), nullable=False),
-        sa.Column("value", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("value", sa.JSON(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.PrimaryKeyConstraint("id"),
@@ -66,7 +65,7 @@ def upgrade() -> None:
         sa.Column("views_count", sa.Integer(), nullable=True),
         sa.Column("status", sa.String(length=50), nullable=False),
         sa.Column("skip_reason", sa.Text(), nullable=True),
-        sa.Column("topic_analysis", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column("topic_analysis", sa.JSON(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.ForeignKeyConstraint(["channel_id"], ["channels.id"], ondelete="CASCADE"),

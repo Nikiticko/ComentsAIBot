@@ -6,5 +6,8 @@ if [ ! -d ".venv" ]; then
 fi
 
 source .venv/bin/activate
+mkdir -p data
 python -m pip install -e . || exit 1
+python scripts/check_env.py || exit 1
+alembic upgrade head || exit 1
 comments-admin-bot

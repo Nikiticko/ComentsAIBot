@@ -12,4 +12,7 @@ __pycache__/
 .venv/
 venv/
 
+data/*.db
+data/*.db-*
+
 .DS_Store

@@ -1,8 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, func
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from comments_ai_bot.core.types import CommentStatus, LogLevel, PostStatus
@@ -43,7 +42,7 @@ class Post(Base, TimestampMixin):
     views_count: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(50), default=PostStatus.NEW.value, index=True)
     skip_reason: Mapped[str | None] = mapped_column(Text)
-    topic_analysis: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    topic_analysis: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
     channel: Mapped[Channel] = relationship(back_populates="posts")
     comments: Mapped[list["Comment"]] = relationship(back_populates="post")
@@ -71,7 +70,7 @@ class Log(Base):
     message: Mapped[str] = mapped_column(Text)
     entity_type: Mapped[str | None] = mapped_column(String(100))
     entity_id: Mapped[int | None] = mapped_column(Integer)
-    payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -80,4 +79,4 @@ class Setting(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
-    value: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    value: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
