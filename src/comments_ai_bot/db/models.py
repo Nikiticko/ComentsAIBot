@@ -44,6 +44,8 @@ class TelegramAccount(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="active", index=True)
     last_error: Mapped[str | None] = mapped_column(Text)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    usage_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
 class Post(Base, TimestampMixin):

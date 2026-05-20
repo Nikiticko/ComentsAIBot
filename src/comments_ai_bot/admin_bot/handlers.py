@@ -394,10 +394,20 @@ async def send_high_view_posts_scan(message: Message) -> None:
 
     if result.channel_stats:
         stats_lines = [
-            f"{channel}: проверено {stats['checked']}, 20к+ {stats['high_view']}"
+            (
+                f"{channel}: проверено {stats['checked']}, "
+                f"20к+ {stats['high_view']}, комменты открыты {stats['commentable']}"
+            )
             for channel, stats in result.channel_stats.items()
         ]
         await message.answer("По каналам:\n" + "\n".join(stats_lines))
+
+    if result.account_stats:
+        account_lines = [
+            f"{account}: каналов {count}"
+            for account, count in result.account_stats.items()
+        ]
+        await message.answer("По аккаунтам:\n" + "\n".join(account_lines))
 
     if result.errors:
         error_lines = "\n".join(f"- {error}" for error in result.errors[:10])
@@ -412,7 +422,14 @@ async def send_high_view_posts_scan(message: Message) -> None:
         text_preview = (post.text or "").replace("\n", " ").strip()
         if len(text_preview) > 80:
             text_preview = f"{text_preview[:77]}..."
-        line = f"{post.channel_username} | {post.views_count} просмотров | {post.date}\n{post.url}"
+        comment_status = "комменты открыты" if post.comments_available else "комменты закрыты"
+        line = (
+            f"{post.channel_username} | {post.views_count} просмотров | {post.date}\n"
+            f"{comment_status} | аккаунт: {post.account}\n"
+            f"{post.url}"
+        )
+        if post.comments_reason and not post.comments_available:
+            line = f"{line}\nПричина: {post.comments_reason}"
         if text_preview:
             line = f"{line}\n{text_preview}"
         lines.append(line)

@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from telethon import TelegramClient
+from telethon import TelegramClient, errors
 from telethon.tl.custom.message import Message
 
 from comments_ai_bot.core.config import settings
@@ -14,6 +14,12 @@ class TelegramPost:
     text: str | None
     views: int | None
     date: datetime
+
+
+@dataclass(frozen=True)
+class CommentAvailability:
+    available: bool
+    reason: str | None = None
 
 
 class TelegramAccountClient:
@@ -73,8 +79,33 @@ class TelegramAccountClient:
             if not message.action and (min_date is None or message.date >= min_date)
         ]
 
-    async def can_comment(self, channel_username: str, post_id: int) -> bool:
-        raise NotImplementedError
+    async def can_comment(self, channel_username: str, post_id: int) -> CommentAvailability:
+        entity = await self.client.get_entity(channel_username)
+        message = await self.client.get_messages(entity, ids=post_id)
+        if message is None:
+            return CommentAvailability(False, "Пост не найден")
+
+        if not message.replies or not getattr(message.replies, "comments", False):
+            return CommentAvailability(False, "Комментарии у поста не включены")
+
+        try:
+            discussion_peer, _ = await self.client._get_comment_data(entity, post_id)
+            permissions = await self.client.get_permissions(discussion_peer, "me")
+        except errors.ChatAdminRequiredError:
+            return CommentAvailability(False, "Нет доступа к группе обсуждений")
+        except errors.ChannelPrivateError:
+            return CommentAvailability(False, "Группа обсуждений недоступна")
+        except errors.UserBannedInChannelError:
+            return CommentAvailability(False, "Аккаунт ограничен в группе обсуждений")
+        except errors.RPCError as error:
+            return CommentAvailability(False, f"Ошибка проверки комментариев: {error}")
+        except (ValueError, StopIteration, AttributeError) as error:
+            return CommentAvailability(False, f"Обсуждение недоступно: {error}")
+
+        if getattr(permissions, "send_messages", None) is False:
+            return CommentAvailability(False, "Нет права писать в обсуждение")
+
+        return CommentAvailability(True)
 
     async def send_comment(self, channel_username: str, post_id: int, text: str) -> int:
         raise NotImplementedError

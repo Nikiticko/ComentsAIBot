@@ -1,7 +1,8 @@
+from datetime import datetime, timezone
+from typing import Any
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from typing import Any
 
 from comments_ai_bot.core.types import LogLevel
 from comments_ai_bot.db.models import Channel, Log, Post, TelegramAccount
@@ -180,10 +181,28 @@ class TelegramAccountRepository:
         result = await self.session.execute(
             select(TelegramAccount)
             .where(TelegramAccount.is_active.is_(True), TelegramAccount.status == "active")
-            .order_by(TelegramAccount.id)
+            .order_by(TelegramAccount.last_used_at.is_not(None), TelegramAccount.last_used_at, TelegramAccount.id)
             .limit(1)
         )
         return result.scalar_one_or_none()
+
+    async def list_active(self) -> list[TelegramAccount]:
+        result = await self.session.execute(
+            select(TelegramAccount)
+            .where(TelegramAccount.is_active.is_(True), TelegramAccount.status == "active")
+            .order_by(TelegramAccount.last_used_at.is_not(None), TelegramAccount.last_used_at, TelegramAccount.id)
+        )
+        return list(result.scalars().all())
+
+    async def mark_used(self, account_id: int) -> TelegramAccount | None:
+        account = await self.get(account_id)
+        if account is None:
+            return None
+
+        account.last_used_at = datetime.now(timezone.utc)
+        account.usage_count += 1
+        await self.session.flush()
+        return account
 
     async def toggle(self, account_id: int) -> TelegramAccount | None:
         account = await self.get(account_id)
