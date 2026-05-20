@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 
 from aiogram import F, Router
 from aiogram.filters import CommandStart
@@ -17,12 +18,18 @@ from comments_ai_bot.admin_bot.keyboards import (
     cancel_keyboard,
     channel_actions,
     main_menu,
+    telegram_account_actions,
+    telegram_accounts_menu,
 )
 from comments_ai_bot.admin_bot.states import ChannelStates
-from comments_ai_bot.db.repositories import ChannelRepository, LogRepository
+from comments_ai_bot.db.repositories import (
+    ChannelRepository,
+    LogRepository,
+    TelegramAccountRepository,
+)
 from comments_ai_bot.db.session import async_session_factory
 from comments_ai_bot.monitoring.manual_scan import ManualPostScanner
-from comments_ai_bot.telegram_client.auth import get_auth_status, start_qr_login, wait_qr_login
+from comments_ai_bot.telegram_client.auth import remove_session_files, start_qr_login, wait_qr_login
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -214,19 +221,50 @@ async def scan_high_view_posts_from_menu(message: Message) -> None:
 
 @router.message(F.text == TELEGRAM_AUTH)
 async def authorize_telegram_from_menu(message: Message) -> None:
-    await send_telegram_qr_auth(message)
+    await send_telegram_accounts(message)
+
+
+async def send_telegram_accounts(message: Message) -> None:
+    async with async_session_factory() as session:
+        accounts = await TelegramAccountRepository(session).list_all()
+
+    await message.answer(
+        f"Telegram-аккаунты: {len(accounts)}/100",
+        reply_markup=telegram_accounts_menu(),
+    )
+    if not accounts:
+        await message.answer("Аккаунты ещё не добавлены.")
+        return
+
+    for account in accounts:
+        active = "активен" if account.is_active else "выключен"
+        title = account.username or account.first_name or str(account.telegram_user_id or account.id)
+        text = (
+            f"#{account.id} {title}\n"
+            f"Статус: {account.status}, {active}\n"
+            f"Сессия: {account.session_name}"
+        )
+        if account.last_error:
+            text = f"{text}\nОшибка: {account.last_error}"
+        await message.answer(text, reply_markup=telegram_account_actions(account.id, account.is_active))
+
+
+@router.callback_query(F.data == "tg_account:add")
+async def add_telegram_account(callback: CallbackQuery) -> None:
+    await callback.answer("Генерирую QR")
+    await send_telegram_qr_auth(callback.message)
 
 
 async def send_telegram_qr_auth(message: Message) -> None:
-    status = await get_auth_status()
-    if status.ok:
-        await message.answer(status.message, reply_markup=main_menu())
-        return
-
-    await message.answer("Генерирую QR-код для авторизации Telegram-аккаунта.")
-
     try:
-        client, qr_login, qr_png = await start_qr_login()
+        async with async_session_factory() as session:
+            repo = TelegramAccountRepository(session)
+            session_name = f"tg_account_{int(time.time())}"
+            account = await repo.create_pending(session_name)
+            await session.commit()
+
+        await message.answer("Генерирую QR-код для нового Telegram-аккаунта.")
+        client, qr_login, qr_png = await start_qr_login(session_name)
     except Exception as error:
         logger.exception("Failed to start Telegram QR login")
         await message.answer(f"Не удалось создать QR-код: {error}", reply_markup=main_menu())
@@ -242,7 +280,80 @@ async def send_telegram_qr_auth(message: Message) -> None:
     )
 
     result = await wait_qr_login(client, qr_login)
+    async with async_session_factory() as session:
+        repo = TelegramAccountRepository(session)
+        if result.ok:
+            me = await start_authorized_account_probe(session_name)
+            await repo.mark_authorized(
+                account.id,
+                telegram_user_id=me["id"],
+                username=me["username"],
+                first_name=me["first_name"],
+                phone=me["phone"],
+            )
+            await LogRepository(session).info(
+                "telegram_account_added",
+                f"Добавлен Telegram-аккаунт {me['username'] or me['id']}",
+                "telegram_account",
+                account.id,
+            )
+        else:
+            await repo.mark_error(account.id, result.message)
+        await session.commit()
+
     await message.answer(result.message, reply_markup=main_menu())
+
+
+async def start_authorized_account_probe(session_name: str) -> dict:
+    from comments_ai_bot.telegram_client.auth import create_client
+
+    client = await create_client(session_name)
+    try:
+        me = await client.get_me()
+        return {
+            "id": me.id,
+            "username": me.username,
+            "first_name": me.first_name,
+            "phone": me.phone,
+        }
+    finally:
+        await client.disconnect()
+
+
+@router.callback_query(F.data.startswith("tg_account:toggle:"))
+async def toggle_telegram_account(callback: CallbackQuery) -> None:
+    account_id = int((callback.data or "").split(":")[-1])
+    async with async_session_factory() as session:
+        account = await TelegramAccountRepository(session).toggle(account_id)
+        await session.commit()
+
+    if account is None:
+        await callback.answer("Аккаунт не найден", show_alert=True)
+        return
+    if account.status != "active":
+        await callback.answer("Можно включать только авторизованный аккаунт", show_alert=True)
+        return
+
+    await callback.message.answer("Список аккаунтов обновлён.", reply_markup=main_menu())
+    await send_telegram_accounts(callback.message)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("tg_account:delete:"))
+async def delete_telegram_account(callback: CallbackQuery) -> None:
+    account_id = int((callback.data or "").split(":")[-1])
+    async with async_session_factory() as session:
+        account = await TelegramAccountRepository(session).delete(account_id)
+        await session.commit()
+
+    if account is None:
+        await callback.answer("Аккаунт не найден", show_alert=True)
+        return
+
+    remove_session_files(account.session_name)
+    await callback.message.answer("Telegram-аккаунт удалён.", reply_markup=main_menu())
+    await send_telegram_accounts(callback.message)
+    await callback.answer()
 
 
 @router.callback_query(F.data == "posts:scan_high_views")

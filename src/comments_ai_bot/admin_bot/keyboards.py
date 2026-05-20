@@ -4,7 +4,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardBu
 ADD_CHANNEL = "Добавить канал"
 CHANNEL_LIST = "Список каналов"
 HIGH_VIEW_POSTS = "Посты 20к+"
-TELEGRAM_AUTH = "Авторизация TG"
+TELEGRAM_AUTH = "Аккаунты TG"
 LOGS = "Логи"
 SETTINGS = "Настройки"
 CANCEL = "Отмена"
@@ -46,5 +46,31 @@ def channel_actions(channel_id: int, is_active: bool) -> InlineKeyboardMarkup:
                 ),
             ],
             [InlineKeyboardButton(text="Назад", callback_data="channel:list")],
+        ]
+    )
+
+
+def telegram_accounts_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Добавить аккаунт", callback_data="tg_account:add")],
+        ]
+    )
+
+
+def telegram_account_actions(account_id: int, is_active: bool) -> InlineKeyboardMarkup:
+    toggle_text = "Выключить" if is_active else "Включить"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=toggle_text,
+                    callback_data=f"tg_account:toggle:{account_id}",
+                ),
+                InlineKeyboardButton(
+                    text="Удалить",
+                    callback_data=f"tg_account:delete:{account_id}",
+                ),
+            ],
         ]
     )

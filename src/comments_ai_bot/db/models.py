@@ -32,6 +32,20 @@ class Channel(Base, TimestampMixin):
     posts: Mapped[list["Post"]] = relationship(back_populates="channel")
 
 
+class TelegramAccount(Base, TimestampMixin):
+    __tablename__ = "telegram_accounts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_name: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    telegram_user_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, index=True)
+    username: Mapped[str | None] = mapped_column(String(255), index=True)
+    first_name: Mapped[str | None] = mapped_column(String(255))
+    phone: Mapped[str | None] = mapped_column(String(64))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(50), default="active", index=True)
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+
 class Post(Base, TimestampMixin):
     __tablename__ = "posts"
 

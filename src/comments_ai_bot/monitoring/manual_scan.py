@@ -1,10 +1,17 @@
 from dataclasses import dataclass, field
 import logging
+from pathlib import Path
 
 from telethon.errors import RPCError
 
+from comments_ai_bot.core.config import settings
 from comments_ai_bot.core.types import PostStatus
-from comments_ai_bot.db.repositories import ChannelRepository, LogRepository, PostRepository
+from comments_ai_bot.db.repositories import (
+    ChannelRepository,
+    LogRepository,
+    PostRepository,
+    TelegramAccountRepository,
+)
 from comments_ai_bot.db.session import async_session_factory
 from comments_ai_bot.filtering.rules import MIN_POST_VIEWS
 from comments_ai_bot.telegram_client.client import TelegramAccountClient
@@ -46,14 +53,23 @@ class ManualPostScanner:
 
         async with async_session_factory() as session:
             channels = await ChannelRepository(session).list_active()
+            account = await TelegramAccountRepository(session).get_active()
             result.channels_total = len(channels)
 
         if not channels:
             logger.info("Manual scan skipped: no active channels")
             return result
+        session_name = account.session_name if account is not None else None
+        legacy_session_exists = Path("data", f"{settings.telegram_session_name}.session").exists()
+        if account is None and not legacy_session_exists:
+            result.errors.append("Нет активного Telegram-аккаунта. Открой 'Аккаунты TG' и добавь аккаунт.")
+            logger.warning("Manual scan skipped: no active telegram account")
+            return result
+        if account is None:
+            logger.warning("Using legacy Telegram session; add account via 'Аккаунты TG' to manage it")
 
         try:
-            async with TelegramAccountClient() as telegram:
+            async with TelegramAccountClient(session_name) as telegram:
                 for channel in channels:
                     logger.info("Scanning channel %s", channel.username)
                     try:

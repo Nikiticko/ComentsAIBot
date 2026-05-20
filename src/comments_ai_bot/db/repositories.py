@@ -1,10 +1,12 @@
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from typing import Any
 
 from comments_ai_bot.core.types import LogLevel
-from comments_ai_bot.db.models import Channel, Log, Post
+from comments_ai_bot.db.models import Channel, Log, Post, TelegramAccount
+
+MAX_TELEGRAM_ACCOUNTS = 100
 
 
 class ChannelRepository:
@@ -114,6 +116,93 @@ class LogRepository:
     async def latest(self, limit: int = 10) -> list[Log]:
         result = await self.session.execute(select(Log).order_by(Log.id.desc()).limit(limit))
         return list(result.scalars().all())
+
+
+class TelegramAccountRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def count(self) -> int:
+        result = await self.session.execute(select(func.count()).select_from(TelegramAccount))
+        return int(result.scalar_one())
+
+    async def create_pending(self, session_name: str) -> TelegramAccount:
+        if await self.count() >= MAX_TELEGRAM_ACCOUNTS:
+            raise RuntimeError(f"Нельзя добавить больше {MAX_TELEGRAM_ACCOUNTS} Telegram-аккаунтов.")
+
+        account = TelegramAccount(session_name=session_name, status="pending", is_active=False)
+        self.session.add(account)
+        await self.session.flush()
+        return account
+
+    async def mark_authorized(
+        self,
+        account_id: int,
+        *,
+        telegram_user_id: int,
+        username: str | None,
+        first_name: str | None,
+        phone: str | None,
+    ) -> TelegramAccount | None:
+        account = await self.get(account_id)
+        if account is None:
+            return None
+
+        account.telegram_user_id = telegram_user_id
+        account.username = username
+        account.first_name = first_name
+        account.phone = phone
+        account.is_active = True
+        account.status = "active"
+        account.last_error = None
+        await self.session.flush()
+        return account
+
+    async def mark_error(self, account_id: int, error: str) -> TelegramAccount | None:
+        account = await self.get(account_id)
+        if account is None:
+            return None
+
+        account.status = "error"
+        account.is_active = False
+        account.last_error = error
+        await self.session.flush()
+        return account
+
+    async def get(self, account_id: int) -> TelegramAccount | None:
+        return await self.session.get(TelegramAccount, account_id)
+
+    async def list_all(self) -> list[TelegramAccount]:
+        result = await self.session.execute(select(TelegramAccount).order_by(TelegramAccount.id.desc()))
+        return list(result.scalars().all())
+
+    async def get_active(self) -> TelegramAccount | None:
+        result = await self.session.execute(
+            select(TelegramAccount)
+            .where(TelegramAccount.is_active.is_(True), TelegramAccount.status == "active")
+            .order_by(TelegramAccount.id)
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def toggle(self, account_id: int) -> TelegramAccount | None:
+        account = await self.get(account_id)
+        if account is None:
+            return None
+        if account.status != "active":
+            return account
+
+        account.is_active = not account.is_active
+        await self.session.flush()
+        return account
+
+    async def delete(self, account_id: int) -> TelegramAccount | None:
+        account = await self.get(account_id)
+        if account is None:
+            return None
+
+        await self.session.delete(account)
+        return account
 
 
 class PostRepository:

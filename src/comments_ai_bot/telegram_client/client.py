@@ -17,8 +17,12 @@ class TelegramPost:
 
 
 class TelegramAccountClient:
-    def __init__(self) -> None:
-        session_path = Path("data") / settings.telegram_session_name
+    def __init__(self, session_name: str | None = None) -> None:
+        if session_name is None:
+            session_path = Path("data") / settings.telegram_session_name
+        else:
+            session_path = Path("data") / "accounts" / session_name
+        session_path.parent.mkdir(parents=True, exist_ok=True)
         self.client = TelegramClient(
             str(session_path),
             settings.telegram_api_id,

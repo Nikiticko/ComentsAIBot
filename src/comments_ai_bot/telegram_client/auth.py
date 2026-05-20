@@ -19,12 +19,14 @@ class TelegramAuthResult:
     message: str
 
 
-def session_path() -> Path:
-    return Path("data") / settings.telegram_session_name
+def session_path(session_name: str | None = None) -> Path:
+    if session_name is None:
+        session_name = settings.telegram_session_name
+    return Path("data") / "accounts" / session_name
 
 
-def remove_session_files() -> None:
-    base_path = session_path()
+def remove_session_files(session_name: str | None = None) -> None:
+    base_path = session_path(session_name)
     for path in (base_path.with_suffix(".session"), base_path.with_suffix(".session-journal")):
         if path.exists():
             path.unlink()
@@ -40,10 +42,10 @@ def build_qr_png(url: str) -> bytes:
     return buffer.getvalue()
 
 
-async def create_client() -> TelegramClient:
-    Path("data").mkdir(exist_ok=True)
+async def create_client(session_name: str | None = None) -> TelegramClient:
+    (Path("data") / "accounts").mkdir(parents=True, exist_ok=True)
     client = TelegramClient(
-        str(session_path()),
+        str(session_path(session_name)),
         settings.telegram_api_id,
         settings.telegram_api_hash,
     )
@@ -51,8 +53,8 @@ async def create_client() -> TelegramClient:
     return client
 
 
-async def get_auth_status() -> TelegramAuthResult:
-    client = await create_client()
+async def get_auth_status(session_name: str | None = None) -> TelegramAuthResult:
+    client = await create_client(session_name)
     try:
         if not await client.is_user_authorized():
             return TelegramAuthResult(False, "Telegram-аккаунт не авторизован.")
@@ -66,15 +68,15 @@ async def get_auth_status() -> TelegramAuthResult:
         await client.disconnect()
 
 
-async def start_qr_login() -> tuple[TelegramClient, object, bytes]:
-    client = await create_client()
+async def start_qr_login(session_name: str | None = None) -> tuple[TelegramClient, object, bytes]:
+    client = await create_client(session_name)
 
     if await client.is_user_authorized():
         me = await client.get_me()
         if me.bot:
             await client.disconnect()
-            remove_session_files()
-            client = await create_client()
+            remove_session_files(session_name)
+            client = await create_client(session_name)
         else:
             await client.disconnect()
             raise RuntimeError(f"Telegram-аккаунт уже авторизован: {me.username or me.id}")

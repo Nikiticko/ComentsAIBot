@@ -22,6 +22,8 @@ data/*.db
 data/*.db-*
 data/*.session
 data/*.session-journal
+data/**/*.session
+data/**/*.session-journal
 
 logs/
 *.log
