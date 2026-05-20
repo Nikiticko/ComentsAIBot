@@ -18,6 +18,7 @@ class TelegramPost:
     views: int | None
     date: datetime
     grouped_id: int | None = None
+    message_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -116,11 +117,12 @@ class TelegramAccountClient:
             views=message.views,
             date=message.date,
             grouped_id=getattr(message, "grouped_id", None),
+            message_ids=(message.id,),
         )
 
     def _album_to_post(self, grouped_id: int, messages: list[Message]) -> TelegramPost:
         sorted_messages = sorted(messages, key=lambda message: message.id)
-        canonical = sorted_messages[0]
+        canonical = self._select_album_canonical_message(sorted_messages)
         text_message = next((message for message in sorted_messages if message.message), canonical)
         views = max((message.views or 0 for message in sorted_messages), default=0)
 
@@ -130,31 +132,54 @@ class TelegramAccountClient:
             views=views,
             date=canonical.date,
             grouped_id=grouped_id,
+            message_ids=tuple(message.id for message in sorted_messages),
         )
 
-    async def can_comment(self, channel_username: str, post_id: int) -> CommentAvailability:
+    def _select_album_canonical_message(self, messages: list[Message]) -> Message:
+        return (
+            next((message for message in messages if self._has_comment_thread(message)), None)
+            or next((message for message in messages if message.message), None)
+            or messages[0]
+        )
+
+    def _has_comment_thread(self, message: Message) -> bool:
+        return bool(message.replies and getattr(message.replies, "comments", False))
+
+    async def can_comment(
+        self,
+        channel_username: str,
+        post_id: int,
+        candidate_post_ids: tuple[int, ...] | None = None,
+    ) -> CommentAvailability:
         entity = await self.client.get_entity(channel_username)
-        message = await self.client.get_messages(entity, ids=post_id)
-        if message is None:
-            return CommentAvailability(False, "Пост не найден")
+        post_ids = candidate_post_ids or (post_id,)
+        last_reason = "Комментарии недоступны"
 
-        if not message.replies or not getattr(message.replies, "comments", False):
-            return CommentAvailability(False, "Комментарии у поста не включены")
+        for candidate_post_id in post_ids:
+            message = await self.client.get_messages(entity, ids=candidate_post_id)
+            if message is None:
+                last_reason = "Пост не найден"
+                continue
 
-        try:
-            await self.client._get_comment_data(entity, post_id)
-        except errors.ChatAdminRequiredError:
-            return CommentAvailability(False, "Нет доступа к группе обсуждений")
-        except errors.ChannelPrivateError:
-            return CommentAvailability(False, "Группа обсуждений недоступна")
-        except errors.UserBannedInChannelError:
-            return CommentAvailability(False, "Аккаунт ограничен в группе обсуждений")
-        except errors.RPCError as error:
-            return CommentAvailability(False, f"Ошибка проверки комментариев: {error}")
-        except (ValueError, StopIteration, AttributeError) as error:
-            return CommentAvailability(False, f"Обсуждение недоступно: {error}")
+            try:
+                await self.client._get_comment_data(entity, candidate_post_id)
+                return CommentAvailability(True)
+            except errors.ChatAdminRequiredError:
+                return CommentAvailability(False, "Нет доступа к группе обсуждений")
+            except errors.ChannelPrivateError:
+                return CommentAvailability(False, "Группа обсуждений недоступна")
+            except errors.UserBannedInChannelError:
+                return CommentAvailability(False, "Аккаунт ограничен в группе обсуждений")
+            except errors.RPCError as error:
+                last_reason = f"Ошибка проверки комментариев: {error}"
+            except (ValueError, StopIteration, AttributeError) as error:
+                last_reason = (
+                    "Комментарии у поста не включены"
+                    if not self._has_comment_thread(message)
+                    else f"Обсуждение недоступно: {error}"
+                )
 
-        return CommentAvailability(True)
+        return CommentAvailability(False, last_reason)
 
     async def send_comment(self, channel_username: str, post_id: int, text: str) -> int:
         raise NotImplementedError

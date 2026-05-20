@@ -155,7 +155,11 @@ class ManualPostScanner:
                 if views_count >= MIN_POST_VIEWS:
                     result.channel_stats[channel.username]["high_view"] += 1
                     try:
-                        availability = await telegram.can_comment(channel.username, post.id)
+                        availability = await telegram.can_comment(
+                            channel.username,
+                            post.id,
+                            post.message_ids,
+                        )
                     except (RPCError, ValueError, RuntimeError) as error:
                         logger.exception(
                             "Failed to check comments for %s/%s",
