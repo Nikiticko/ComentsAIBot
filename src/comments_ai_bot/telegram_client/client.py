@@ -42,6 +42,12 @@ class TelegramAccountClient:
             raise RuntimeError(
                 "Telegram-аккаунт не авторизован. Запусти: python scripts/auth_telegram.py"
             )
+        me = await self.client.get_me()
+        if me.bot:
+            raise RuntimeError(
+                "Telethon-сессия авторизована как бот. Для парсинга нужен обычный Telegram-аккаунт. "
+                f"Удали data/{settings.telegram_session_name}.session и запусти python scripts/auth_telegram.py"
+            )
 
     async def fetch_recent_posts(
         self,

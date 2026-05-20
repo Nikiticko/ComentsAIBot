@@ -5,6 +5,10 @@ import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+from comments_ai_bot.core.logging import setup_logging
+
 WATCH_PATHS = (
     PROJECT_ROOT / "src",
     PROJECT_ROOT / "scripts",
@@ -55,6 +59,7 @@ def stop_bot(process: subprocess.Popen) -> None:
 
 
 def main() -> int:
+    setup_logging()
     print("Dev watcher started. Press Ctrl+C to stop.")
     state = snapshot()
     process = start_bot()

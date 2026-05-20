@@ -1,15 +1,15 @@
 import asyncio
-import logging
 
 from aiogram import Bot, Dispatcher
 
 from comments_ai_bot.admin_bot.handlers import router
 from comments_ai_bot.admin_bot.middleware import AdminOnlyMiddleware
 from comments_ai_bot.core.config import settings
+from comments_ai_bot.core.logging import setup_logging
 
 
 async def run() -> None:
-    logging.basicConfig(level=settings.log_level)
+    setup_logging()
 
     bot = Bot(token=settings.admin_bot_token)
     dispatcher = Dispatcher()

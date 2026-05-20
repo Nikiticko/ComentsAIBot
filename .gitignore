@@ -5,16 +5,25 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+*.egg
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
 
 .venv/
 venv/
+
+build/
+dist/
 
 data/*.db
 data/*.db-*
 data/*.session
 data/*.session-journal
+
+logs/
+*.log
 
 .DS_Store
