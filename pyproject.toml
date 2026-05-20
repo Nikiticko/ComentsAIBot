@@ -10,6 +10,7 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "openai>=1.30.0",
     "python-dotenv>=1.0.1",
+    "qrcode>=8.0",
     "sqlalchemy[asyncio]>=2.0.30",
     "telethon>=1.35.0",
 ]
