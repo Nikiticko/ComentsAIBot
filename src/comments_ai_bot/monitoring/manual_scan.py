@@ -31,6 +31,7 @@ class ScanResult:
     posts_checked: int = 0
     posts_saved: int = 0
     scan_hours: int = POST_SCAN_HOURS
+    errors: list[str] = field(default_factory=list)
     high_view_posts: list[HighViewPost] = field(default_factory=list)
 
 
@@ -42,65 +43,72 @@ class ManualPostScanner:
             channels = await ChannelRepository(session).list_active()
             result.channels_total = len(channels)
 
-        async with TelegramAccountClient() as telegram:
-            for channel in channels:
-                try:
-                    posts = await telegram.fetch_recent_posts(
-                        channel.username,
-                        limit=POST_SCAN_LIMIT,
-                        hours=POST_SCAN_HOURS,
-                    )
-                except (RPCError, ValueError, RuntimeError) as error:
-                    result.channels_failed += 1
+        if not channels:
+            return result
+
+        try:
+            async with TelegramAccountClient() as telegram:
+                for channel in channels:
+                    try:
+                        posts = await telegram.fetch_recent_posts(
+                            channel.username,
+                            limit=POST_SCAN_LIMIT,
+                            hours=POST_SCAN_HOURS,
+                        )
+                    except (RPCError, ValueError, RuntimeError) as error:
+                        result.channels_failed += 1
+                        result.errors.append(f"{channel.username}: {error}")
+                        async with async_session_factory() as session:
+                            await LogRepository(session).info(
+                                "channel_scan_failed",
+                                f"Не удалось спарсить {channel.username}: {error}",
+                                "channel",
+                                channel.id,
+                            )
+                            await session.commit()
+                        continue
+
+                    result.posts_checked += len(posts)
+
                     async with async_session_factory() as session:
-                        await LogRepository(session).info(
-                            "channel_scan_failed",
-                            f"Не удалось спарсить {channel.username}: {error}",
+                        post_repo = PostRepository(session)
+                        log_repo = LogRepository(session)
+
+                        for post in posts:
+                            views_count = post.views or 0
+                            if views_count >= MIN_POST_VIEWS:
+                                status = PostStatus.READY_TO_COMMENT.value
+                                skip_reason = None
+                                result.high_view_posts.append(
+                                    HighViewPost(
+                                        channel_username=channel.username,
+                                        telegram_post_id=post.id,
+                                        views_count=views_count,
+                                        text=post.text,
+                                    )
+                                )
+                            else:
+                                status = PostStatus.VIEWS_TOO_LOW.value
+                                skip_reason = "Недостаточно просмотров"
+
+                            await post_repo.upsert(
+                                channel_id=channel.id,
+                                telegram_post_id=post.id,
+                                text=post.text,
+                                views_count=views_count,
+                                status=status,
+                                skip_reason=skip_reason,
+                            )
+                            result.posts_saved += 1
+
+                        await log_repo.info(
+                            "channel_scanned",
+                            f"Канал {channel.username}: проверено постов за 24 часа {len(posts)}",
                             "channel",
                             channel.id,
                         )
                         await session.commit()
-                    continue
-
-                result.posts_checked += len(posts)
-
-                async with async_session_factory() as session:
-                    post_repo = PostRepository(session)
-                    log_repo = LogRepository(session)
-
-                    for post in posts:
-                        views_count = post.views or 0
-                        if views_count >= MIN_POST_VIEWS:
-                            status = PostStatus.READY_TO_COMMENT.value
-                            skip_reason = None
-                            result.high_view_posts.append(
-                                HighViewPost(
-                                    channel_username=channel.username,
-                                    telegram_post_id=post.id,
-                                    views_count=views_count,
-                                    text=post.text,
-                                )
-                            )
-                        else:
-                            status = PostStatus.VIEWS_TOO_LOW.value
-                            skip_reason = "Недостаточно просмотров"
-
-                        await post_repo.upsert(
-                            channel_id=channel.id,
-                            telegram_post_id=post.id,
-                            text=post.text,
-                            views_count=views_count,
-                            status=status,
-                            skip_reason=skip_reason,
-                        )
-                        result.posts_saved += 1
-
-                    await log_repo.info(
-                        "channel_scanned",
-                        f"Канал {channel.username}: проверено постов за 24 часа {len(posts)}",
-                        "channel",
-                        channel.id,
-                    )
-                    await session.commit()
+        except RuntimeError as error:
+            result.errors.append(str(error))
 
         return result

@@ -184,6 +184,10 @@ async def scan_high_view_posts(callback: CallbackQuery) -> None:
     )
     await callback.message.answer(summary, reply_markup=main_menu())
 
+    if result.errors:
+        error_lines = "\n".join(f"- {error}" for error in result.errors[:10])
+        await callback.message.answer(f"Ошибки парсинга:\n{error_lines}")
+
     if not result.high_view_posts:
         return
 
