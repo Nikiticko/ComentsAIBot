@@ -13,6 +13,7 @@ from comments_ai_bot.admin_bot.keyboards import (
     CHANNEL_LIST,
     HIGH_VIEW_POSTS,
     LOGS,
+    READY_TO_COMMENT_POSTS,
     SETTINGS,
     TELEGRAM_AUTH,
     cancel_keyboard,
@@ -25,9 +26,11 @@ from comments_ai_bot.admin_bot.states import ChannelStates
 from comments_ai_bot.db.repositories import (
     ChannelRepository,
     LogRepository,
+    PostRepository,
     TelegramAccountRepository,
 )
 from comments_ai_bot.db.session import async_session_factory
+from comments_ai_bot.core.types import PostStatus
 from comments_ai_bot.monitoring.manual_scan import ManualPostScanner
 from comments_ai_bot.telegram_client.auth import remove_session_files, start_qr_login, wait_qr_login
 
@@ -219,6 +222,11 @@ async def scan_high_view_posts_from_menu(message: Message) -> None:
     await send_high_view_posts_scan(message)
 
 
+@router.message(F.text == READY_TO_COMMENT_POSTS)
+async def ready_to_comment_posts_from_menu(message: Message) -> None:
+    await send_ready_to_comment_posts(message)
+
+
 @router.message(F.text == TELEGRAM_AUTH)
 async def authorize_telegram_from_menu(message: Message) -> None:
     await send_telegram_accounts(message)
@@ -360,6 +368,33 @@ async def delete_telegram_account(callback: CallbackQuery) -> None:
 async def scan_high_view_posts(callback: CallbackQuery) -> None:
     await callback.answer("Парсинг запущен")
     await send_high_view_posts_scan(callback.message)
+
+
+async def send_ready_to_comment_posts(message: Message) -> None:
+    async with async_session_factory() as session:
+        rows = await PostRepository(session).list_by_status(PostStatus.READY_TO_COMMENT.value, limit=50)
+
+    if not rows:
+        await message.answer("Постов со статусом ready_to_comment пока нет.", reply_markup=main_menu())
+        return
+
+    lines = []
+    for post, channel in rows:
+        text_preview = (post.text or "").replace("\n", " ").strip()
+        if len(text_preview) > 80:
+            text_preview = f"{text_preview[:77]}..."
+        url = f"https://t.me/{channel.username.removeprefix('@')}/{post.telegram_post_id}"
+        line = (
+            f"{channel.username} | {post.views_count or 0} просмотров\n"
+            f"status: {post.status}\n"
+            f"{url}"
+        )
+        if text_preview:
+            line = f"{line}\n{text_preview}"
+        lines.append(line)
+
+    for chunk in split_messages(lines):
+        await message.answer(chunk, reply_markup=main_menu())
 
 
 async def send_high_view_posts_scan(message: Message) -> None:

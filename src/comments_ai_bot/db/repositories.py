@@ -264,3 +264,13 @@ class PostRepository:
 
         await self.session.flush()
         return post
+
+    async def list_by_status(self, status: str, limit: int = 50) -> list[tuple[Post, Channel]]:
+        result = await self.session.execute(
+            select(Post, Channel)
+            .join(Channel, Channel.id == Post.channel_id)
+            .where(Post.status == status)
+            .order_by(Post.views_count.desc(), Post.id.desc())
+            .limit(limit)
+        )
+        return list(result.all())
