@@ -17,6 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "ruff>=0.4.0",
+    "watchfiles>=0.24.0",
 ]
 
 [project.scripts]

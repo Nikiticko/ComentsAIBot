@@ -25,6 +25,9 @@ class ChannelRepository:
         result = await self.session.execute(select(Channel).where(Channel.username == username))
         return result.scalar_one_or_none()
 
+    async def get(self, channel_id: int) -> Channel | None:
+        return await self.session.get(Channel, channel_id)
+
     async def list_all(self) -> list[Channel]:
         result = await self.session.execute(select(Channel).order_by(Channel.id.desc()))
         return list(result.scalars().all())

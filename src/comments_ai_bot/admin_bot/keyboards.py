@@ -29,3 +29,11 @@ def channel_actions(channel_id: int, is_active: bool) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Назад", callback_data="channel:list")],
         ]
     )
+
+
+def cancel_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Отмена", callback_data="common:cancel")],
+        ]
+    )
