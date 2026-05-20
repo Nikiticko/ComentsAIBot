@@ -16,6 +16,7 @@ from comments_ai_bot.admin_bot.keyboards import (
     READY_TO_COMMENT_POSTS,
     SETTINGS,
     TELEGRAM_AUTH,
+    TEST_COMMENT,
     cancel_keyboard,
     channel_actions,
     main_menu,
@@ -32,6 +33,7 @@ from comments_ai_bot.db.repositories import (
 from comments_ai_bot.db.session import async_session_factory
 from comments_ai_bot.core.types import PostStatus
 from comments_ai_bot.monitoring.manual_scan import ManualPostScanner
+from comments_ai_bot.publishing.test_comments import TestCommentSender
 from comments_ai_bot.telegram_client.auth import remove_session_files, start_qr_login, wait_qr_login
 
 router = Router()
@@ -225,6 +227,11 @@ async def scan_high_view_posts_from_menu(message: Message) -> None:
 @router.message(F.text == READY_TO_COMMENT_POSTS)
 async def ready_to_comment_posts_from_menu(message: Message) -> None:
     await send_ready_to_comment_posts(message)
+
+
+@router.message(F.text == TEST_COMMENT)
+async def send_test_comment_from_menu(message: Message) -> None:
+    await send_test_comments(message)
 
 
 @router.message(F.text == TELEGRAM_AUTH)
@@ -467,6 +474,43 @@ async def send_high_view_posts_scan(message: Message) -> None:
             line = f"{line}\nПричина: {post.comments_reason}"
         if text_preview:
             line = f"{line}\n{text_preview}"
+        lines.append(line)
+
+    for chunk in split_messages(lines):
+        await message.answer(chunk)
+
+
+async def send_test_comments(message: Message) -> None:
+    await message.answer(
+        "Запускаю тест: выберу случайный активный канал и отправлю "
+        "`четко` в доступные посты за 24 часа."
+    )
+
+    result = await TestCommentSender().send_to_random_channel()
+    if result.errors:
+        error_text = "\n".join(f"- {error}" for error in result.errors)
+        await message.answer(f"Тест не выполнен:\n{error_text}")
+        return
+
+    summary = (
+        "Тест завершён.\n"
+        f"Канал: {result.channel_username}\n"
+        f"Аккаунт: {result.account}\n"
+        f"Постов найдено: {result.posts_found}\n"
+        f"Комментариев отправлено: {result.comments_sent}\n"
+        f"Ошибок отправки: {result.comments_failed}\n"
+        f"Пропущено: {result.comments_skipped}"
+    )
+    await message.answer(summary, reply_markup=main_menu())
+
+    if not result.items:
+        return
+
+    lines = []
+    for item in result.items[:30]:
+        line = f"{item.status}: {item.post_url}"
+        if item.reason:
+            line = f"{line}\nПричина: {item.reason}"
         lines.append(line)
 
     for chunk in split_messages(lines):

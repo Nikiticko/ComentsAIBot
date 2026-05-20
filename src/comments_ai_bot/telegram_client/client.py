@@ -181,5 +181,28 @@ class TelegramAccountClient:
 
         return CommentAvailability(False, last_reason)
 
-    async def send_comment(self, channel_username: str, post_id: int, text: str) -> int:
-        raise NotImplementedError
+    async def send_comment(
+        self,
+        channel_username: str,
+        post_id: int,
+        text: str,
+        candidate_post_ids: tuple[int, ...] | None = None,
+    ) -> int:
+        entity = await self.client.get_entity(channel_username)
+        post_ids = candidate_post_ids or (post_id,)
+        last_error: Exception | None = None
+
+        for candidate_post_id in post_ids:
+            try:
+                message = await self.client.send_message(
+                    entity,
+                    text,
+                    comment_to=candidate_post_id,
+                )
+                return message.id
+            except (errors.RPCError, ValueError) as error:
+                last_error = error
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Не найден post_id для отправки комментария")

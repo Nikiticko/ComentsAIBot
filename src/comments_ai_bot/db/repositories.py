@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from comments_ai_bot.core.types import LogLevel
-from comments_ai_bot.db.models import Channel, Log, Post, TelegramAccount
+from comments_ai_bot.db.models import Channel, Comment, Log, Post, TelegramAccount
 
 MAX_TELEGRAM_ACCOUNTS = 100
 
@@ -274,3 +274,28 @@ class PostRepository:
             .limit(limit)
         )
         return list(result.all())
+
+
+class CommentRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def create(
+        self,
+        *,
+        post_id: int,
+        text: str,
+        status: str,
+        telegram_comment_id: int | None = None,
+        error_message: str | None = None,
+    ) -> Comment:
+        comment = Comment(
+            post_id=post_id,
+            text=text,
+            status=status,
+            telegram_comment_id=telegram_comment_id,
+            error_message=error_message,
+        )
+        self.session.add(comment)
+        await self.session.flush()
+        return comment

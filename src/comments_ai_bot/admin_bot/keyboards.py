@@ -5,6 +5,7 @@ ADD_CHANNEL = "Добавить канал"
 CHANNEL_LIST = "Список каналов"
 HIGH_VIEW_POSTS = "Посты 20к+"
 READY_TO_COMMENT_POSTS = "Ready 20к+"
+TEST_COMMENT = "Тест коммент"
 TELEGRAM_AUTH = "Аккаунты TG"
 LOGS = "Логи"
 SETTINGS = "Настройки"
@@ -16,7 +17,7 @@ def main_menu() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text=ADD_CHANNEL), KeyboardButton(text=CHANNEL_LIST)],
             [KeyboardButton(text=HIGH_VIEW_POSTS), KeyboardButton(text=READY_TO_COMMENT_POSTS)],
-            [KeyboardButton(text=TELEGRAM_AUTH)],
+            [KeyboardButton(text=TEST_COMMENT), KeyboardButton(text=TELEGRAM_AUTH)],
             [KeyboardButton(text=LOGS), KeyboardButton(text=SETTINGS)],
         ],
         resize_keyboard=True,
