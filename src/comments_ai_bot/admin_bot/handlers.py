@@ -4,7 +4,7 @@ import re
 from aiogram import F, Router
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from comments_ai_bot.admin_bot.keyboards import (
     ADD_CHANNEL,
@@ -13,6 +13,7 @@ from comments_ai_bot.admin_bot.keyboards import (
     HIGH_VIEW_POSTS,
     LOGS,
     SETTINGS,
+    TELEGRAM_AUTH,
     cancel_keyboard,
     channel_actions,
     main_menu,
@@ -21,6 +22,7 @@ from comments_ai_bot.admin_bot.states import ChannelStates
 from comments_ai_bot.db.repositories import ChannelRepository, LogRepository
 from comments_ai_bot.db.session import async_session_factory
 from comments_ai_bot.monitoring.manual_scan import ManualPostScanner
+from comments_ai_bot.telegram_client.auth import get_auth_status, start_qr_login, wait_qr_login
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -208,6 +210,39 @@ async def send_logs(message: Message) -> None:
 @router.message(F.text == HIGH_VIEW_POSTS)
 async def scan_high_view_posts_from_menu(message: Message) -> None:
     await send_high_view_posts_scan(message)
+
+
+@router.message(F.text == TELEGRAM_AUTH)
+async def authorize_telegram_from_menu(message: Message) -> None:
+    await send_telegram_qr_auth(message)
+
+
+async def send_telegram_qr_auth(message: Message) -> None:
+    status = await get_auth_status()
+    if status.ok:
+        await message.answer(status.message, reply_markup=main_menu())
+        return
+
+    await message.answer("Генерирую QR-код для авторизации Telegram-аккаунта.")
+
+    try:
+        client, qr_login, qr_png = await start_qr_login()
+    except Exception as error:
+        logger.exception("Failed to start Telegram QR login")
+        await message.answer(f"Не удалось создать QR-код: {error}", reply_markup=main_menu())
+        return
+
+    await message.answer_photo(
+        BufferedInputFile(qr_png, filename="telegram-auth-qr.png"),
+        caption=(
+            "Открой Telegram на телефоне:\n"
+            "Настройки -> Устройства -> Подключить устройство.\n\n"
+            "Сканируй QR-код. Жду до 2 минут."
+        ),
+    )
+
+    result = await wait_qr_login(client, qr_login)
+    await message.answer(result.message, reply_markup=main_menu())
 
 
 @router.callback_query(F.data == "posts:scan_high_views")
