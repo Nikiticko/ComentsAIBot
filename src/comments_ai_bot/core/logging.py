@@ -14,26 +14,33 @@ def setup_logging() -> None:
     LOG_DIR.mkdir(exist_ok=True)
 
     root_logger = logging.getLogger()
-    if root_logger.handlers:
-        return
-
     level = getattr(logging, settings.log_level.upper(), logging.INFO)
     root_logger.setLevel(level)
 
     formatter = logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT)
 
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-    console_handler.setLevel(level)
-
-    file_handler = RotatingFileHandler(
-        LOG_FILE,
-        maxBytes=5 * 1024 * 1024,
-        backupCount=5,
-        encoding="utf-8",
+    has_console_handler = any(type(handler) is logging.StreamHandler for handler in root_logger.handlers)
+    has_file_handler = any(
+        isinstance(handler, RotatingFileHandler)
+        and Path(handler.baseFilename) == LOG_FILE.resolve()
+        for handler in root_logger.handlers
     )
-    file_handler.setFormatter(formatter)
-    file_handler.setLevel(level)
 
-    root_logger.addHandler(console_handler)
-    root_logger.addHandler(file_handler)
+    if not has_console_handler:
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
+        console_handler.setLevel(level)
+        root_logger.addHandler(console_handler)
+
+    if not has_file_handler:
+        file_handler = RotatingFileHandler(
+            LOG_FILE,
+            maxBytes=5 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(formatter)
+        file_handler.setLevel(level)
+        root_logger.addHandler(file_handler)
+
+    logging.captureWarnings(True)

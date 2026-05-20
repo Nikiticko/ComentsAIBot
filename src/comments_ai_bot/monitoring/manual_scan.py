@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import logging
 
 from telethon.errors import RPCError
 
@@ -10,6 +11,7 @@ from comments_ai_bot.telegram_client.client import TelegramAccountClient
 
 POST_SCAN_LIMIT = 100
 POST_SCAN_HOURS = 24
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -38,17 +40,20 @@ class ScanResult:
 class ManualPostScanner:
     async def scan_high_view_posts(self) -> ScanResult:
         result = ScanResult()
+        logger.info("Manual high-view post scan started")
 
         async with async_session_factory() as session:
             channels = await ChannelRepository(session).list_active()
             result.channels_total = len(channels)
 
         if not channels:
+            logger.info("Manual scan skipped: no active channels")
             return result
 
         try:
             async with TelegramAccountClient() as telegram:
                 for channel in channels:
+                    logger.info("Scanning channel %s", channel.username)
                     try:
                         posts = await telegram.fetch_recent_posts(
                             channel.username,
@@ -58,12 +63,14 @@ class ManualPostScanner:
                     except (RPCError, ValueError, RuntimeError) as error:
                         result.channels_failed += 1
                         result.errors.append(f"{channel.username}: {error}")
+                        logger.exception("Failed to scan channel %s", channel.username)
                         async with async_session_factory() as session:
-                            await LogRepository(session).info(
+                            await LogRepository(session).error(
                                 "channel_scan_failed",
                                 f"Не удалось спарсить {channel.username}: {error}",
                                 "channel",
                                 channel.id,
+                                payload={"exception_type": type(error).__name__},
                             )
                             await session.commit()
                         continue
@@ -110,5 +117,21 @@ class ManualPostScanner:
                         await session.commit()
         except RuntimeError as error:
             result.errors.append(str(error))
+            logger.exception("Manual high-view post scan failed")
+            async with async_session_factory() as session:
+                await LogRepository(session).error(
+                    "manual_scan_failed",
+                    str(error),
+                    payload={"exception_type": type(error).__name__},
+                )
+                await session.commit()
 
+        logger.info(
+            "Manual high-view post scan finished: channels=%s failed=%s checked=%s saved=%s high_view=%s",
+            result.channels_total,
+            result.channels_failed,
+            result.posts_checked,
+            result.posts_saved,
+            len(result.high_view_posts),
+        )
         return result

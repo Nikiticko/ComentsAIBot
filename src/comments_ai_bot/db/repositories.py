@@ -1,6 +1,8 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from typing import Any
+
 from comments_ai_bot.core.types import LogLevel
 from comments_ai_bot.db.models import Channel, Log, Post
 
@@ -58,23 +60,56 @@ class LogRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def create(
+        self,
+        level: LogLevel,
+        event: str,
+        message: str,
+        entity_type: str | None = None,
+        entity_id: int | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> Log:
+        log = Log(
+            level=level.value,
+            event=event,
+            message=message,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            payload=payload,
+        )
+        self.session.add(log)
+        await self.session.flush()
+        return log
+
     async def info(
         self,
         event: str,
         message: str,
         entity_type: str | None = None,
         entity_id: int | None = None,
+        payload: dict[str, Any] | None = None,
     ) -> Log:
-        log = Log(
-            level=LogLevel.INFO.value,
-            event=event,
-            message=message,
-            entity_type=entity_type,
-            entity_id=entity_id,
-        )
-        self.session.add(log)
-        await self.session.flush()
-        return log
+        return await self.create(LogLevel.INFO, event, message, entity_type, entity_id, payload)
+
+    async def warning(
+        self,
+        event: str,
+        message: str,
+        entity_type: str | None = None,
+        entity_id: int | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> Log:
+        return await self.create(LogLevel.WARNING, event, message, entity_type, entity_id, payload)
+
+    async def error(
+        self,
+        event: str,
+        message: str,
+        entity_type: str | None = None,
+        entity_id: int | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> Log:
+        return await self.create(LogLevel.ERROR, event, message, entity_type, entity_id, payload)
 
     async def latest(self, limit: int = 10) -> list[Log]:
         result = await self.session.execute(select(Log).order_by(Log.id.desc()).limit(limit))

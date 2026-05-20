@@ -1,3 +1,4 @@
+import logging
 import re
 
 from aiogram import F, Router
@@ -12,6 +13,7 @@ from comments_ai_bot.db.session import async_session_factory
 from comments_ai_bot.monitoring.manual_scan import ManualPostScanner
 
 router = Router()
+logger = logging.getLogger(__name__)
 USERNAME_RE = re.compile(r"^@[A-Za-z0-9_]{5,32}$")
 
 
@@ -169,8 +171,16 @@ async def scan_high_view_posts(callback: CallbackQuery) -> None:
 
     try:
         result = await ManualPostScanner().scan_high_view_posts()
-    except RuntimeError as error:
-        await callback.message.answer(str(error), reply_markup=main_menu())
+    except Exception as error:
+        logger.exception("High-view post scan button failed")
+        async with async_session_factory() as session:
+            await LogRepository(session).error(
+                "scan_button_failed",
+                str(error),
+                payload={"exception_type": type(error).__name__},
+            )
+            await session.commit()
+        await callback.message.answer("Ошибка парсинга. Подробности записаны в logs/app.log.", reply_markup=main_menu())
         return
 
     summary = (
