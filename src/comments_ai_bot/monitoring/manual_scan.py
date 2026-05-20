@@ -20,6 +20,7 @@ class HighViewPost:
     telegram_post_id: int
     views_count: int
     text: str | None
+    date: str
 
     @property
     def url(self) -> str:
@@ -34,6 +35,7 @@ class ScanResult:
     posts_saved: int = 0
     scan_hours: int = POST_SCAN_HOURS
     errors: list[str] = field(default_factory=list)
+    channel_stats: dict[str, dict[str, int]] = field(default_factory=dict)
     high_view_posts: list[HighViewPost] = field(default_factory=list)
 
 
@@ -76,6 +78,10 @@ class ManualPostScanner:
                         continue
 
                     result.posts_checked += len(posts)
+                    result.channel_stats[channel.username] = {
+                        "checked": len(posts),
+                        "high_view": 0,
+                    }
 
                     async with async_session_factory() as session:
                         post_repo = PostRepository(session)
@@ -86,12 +92,14 @@ class ManualPostScanner:
                             if views_count >= MIN_POST_VIEWS:
                                 status = PostStatus.READY_TO_COMMENT.value
                                 skip_reason = None
+                                result.channel_stats[channel.username]["high_view"] += 1
                                 result.high_view_posts.append(
                                     HighViewPost(
                                         channel_username=channel.username,
                                         telegram_post_id=post.id,
                                         views_count=views_count,
                                         text=post.text,
+                                        date=post.date.strftime("%Y-%m-%d %H:%M"),
                                     )
                                 )
                             else:

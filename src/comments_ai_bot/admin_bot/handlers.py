@@ -25,6 +25,7 @@ from comments_ai_bot.monitoring.manual_scan import ManualPostScanner
 router = Router()
 logger = logging.getLogger(__name__)
 USERNAME_RE = re.compile(r"^@[A-Za-z0-9_]{5,32}$")
+TELEGRAM_MESSAGE_LIMIT = 3500
 
 
 def normalize_channel_username(value: str) -> str | None:
@@ -245,6 +246,13 @@ async def send_high_view_posts_scan(message: Message) -> None:
     )
     await message.answer(summary, reply_markup=main_menu())
 
+    if result.channel_stats:
+        stats_lines = [
+            f"{channel}: проверено {stats['checked']}, 20к+ {stats['high_view']}"
+            for channel, stats in result.channel_stats.items()
+        ]
+        await message.answer("По каналам:\n" + "\n".join(stats_lines))
+
     if result.errors:
         error_lines = "\n".join(f"- {error}" for error in result.errors[:10])
         await message.answer(f"Ошибки парсинга:\n{error_lines}")
@@ -252,17 +260,39 @@ async def send_high_view_posts_scan(message: Message) -> None:
     if not result.high_view_posts:
         return
 
+    sorted_posts = sorted(result.high_view_posts, key=lambda post: post.views_count, reverse=True)
     lines = []
-    for post in result.high_view_posts[:30]:
+    for post in sorted_posts:
         text_preview = (post.text or "").replace("\n", " ").strip()
         if len(text_preview) > 80:
             text_preview = f"{text_preview[:77]}..."
-        line = f"{post.channel_username} | {post.views_count} просмотров\n{post.url}"
+        line = f"{post.channel_username} | {post.views_count} просмотров | {post.date}\n{post.url}"
         if text_preview:
             line = f"{line}\n{text_preview}"
         lines.append(line)
 
-    await message.answer("\n\n".join(lines))
+    for chunk in split_messages(lines):
+        await message.answer(chunk)
+
+
+def split_messages(items: list[str], limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
+    chunks: list[str] = []
+    current = ""
+
+    for item in items:
+        candidate = item if not current else f"{current}\n\n{item}"
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+
+        if current:
+            chunks.append(current)
+        current = item
+
+    if current:
+        chunks.append(current)
+
+    return chunks
 
 
 @router.message(F.text == SETTINGS)
