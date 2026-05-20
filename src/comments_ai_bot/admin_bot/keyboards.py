@@ -1,15 +1,32 @@
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 
-def main_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Добавить канал", callback_data="channel:add")],
-            [InlineKeyboardButton(text="Список каналов", callback_data="channel:list")],
-            [InlineKeyboardButton(text="Посты 20к+", callback_data="posts:scan_high_views")],
-            [InlineKeyboardButton(text="Логи", callback_data="logs:list")],
-            [InlineKeyboardButton(text="Настройки", callback_data="settings:show")],
-        ]
+ADD_CHANNEL = "Добавить канал"
+CHANNEL_LIST = "Список каналов"
+HIGH_VIEW_POSTS = "Посты 20к+"
+LOGS = "Логи"
+SETTINGS = "Настройки"
+CANCEL = "Отмена"
+
+
+def main_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=ADD_CHANNEL), KeyboardButton(text=CHANNEL_LIST)],
+            [KeyboardButton(text=HIGH_VIEW_POSTS)],
+            [KeyboardButton(text=LOGS), KeyboardButton(text=SETTINGS)],
+        ],
+        resize_keyboard=True,
+        input_field_placeholder="Выбери действие",
+    )
+
+
+def cancel_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=CANCEL)],
+        ],
+        resize_keyboard=True,
     )
 
 
@@ -28,13 +45,5 @@ def channel_actions(channel_id: int, is_active: bool) -> InlineKeyboardMarkup:
                 ),
             ],
             [InlineKeyboardButton(text="Назад", callback_data="channel:list")],
-        ]
-    )
-
-
-def cancel_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Отмена", callback_data="common:cancel")],
         ]
     )

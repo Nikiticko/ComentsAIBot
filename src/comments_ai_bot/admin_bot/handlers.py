@@ -6,7 +6,17 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from comments_ai_bot.admin_bot.keyboards import cancel_keyboard, channel_actions, main_menu
+from comments_ai_bot.admin_bot.keyboards import (
+    ADD_CHANNEL,
+    CANCEL,
+    CHANNEL_LIST,
+    HIGH_VIEW_POSTS,
+    LOGS,
+    SETTINGS,
+    cancel_keyboard,
+    channel_actions,
+    main_menu,
+)
 from comments_ai_bot.admin_bot.states import ChannelStates
 from comments_ai_bot.db.repositories import ChannelRepository, LogRepository
 from comments_ai_bot.db.session import async_session_factory
@@ -36,6 +46,15 @@ async def start(message: Message) -> None:
     await message.answer("Админка Comments AI Bot", reply_markup=main_menu())
 
 
+@router.message(F.text == ADD_CHANNEL)
+async def ask_channel_from_menu(message: Message, state: FSMContext) -> None:
+    await state.set_state(ChannelStates.waiting_for_username)
+    await message.answer(
+        "Отправь username публичного канала, например @channelname",
+        reply_markup=cancel_keyboard(),
+    )
+
+
 @router.callback_query(F.data == "channel:add")
 async def ask_channel(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(ChannelStates.waiting_for_username)
@@ -44,6 +63,12 @@ async def ask_channel(callback: CallbackQuery, state: FSMContext) -> None:
         reply_markup=cancel_keyboard(),
     )
     await callback.answer()
+
+
+@router.message(ChannelStates.waiting_for_username, F.text == CANCEL)
+async def cancel_channel_input(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("Действие отменено.", reply_markup=main_menu())
 
 
 @router.message(ChannelStates.waiting_for_username)
@@ -76,23 +101,31 @@ async def cancel_action(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
+@router.message(F.text == CHANNEL_LIST)
+async def list_channels_from_menu(message: Message) -> None:
+    await send_channel_list(message)
+
+
 @router.callback_query(F.data == "channel:list")
 async def list_channels(callback: CallbackQuery) -> None:
+    await send_channel_list(callback.message)
+    await callback.answer()
+
+
+async def send_channel_list(message: Message) -> None:
     async with async_session_factory() as session:
         channels = await ChannelRepository(session).list_all()
 
     if not channels:
-        await callback.message.answer("Каналы ещё не добавлены.", reply_markup=main_menu())
-        await callback.answer()
+        await message.answer("Каналы ещё не добавлены.", reply_markup=main_menu())
         return
 
     for channel in channels:
         status = "активен" if channel.is_active else "выключен"
-        await callback.message.answer(
+        await message.answer(
             f"{channel.username}\nСтатус: {status}",
             reply_markup=channel_actions(channel.id, channel.is_active),
         )
-    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("channel:toggle:"))
@@ -143,29 +176,47 @@ async def delete_channel(callback: CallbackQuery) -> None:
         await callback.answer("Канал не найден", show_alert=True)
         return
 
-    await callback.message.edit_text("Канал удалён.", reply_markup=main_menu())
+    await callback.message.edit_text("Канал удалён.")
+    await callback.message.answer("Главное меню", reply_markup=main_menu())
     await callback.answer()
+
+
+@router.message(F.text == LOGS)
+async def list_logs_from_menu(message: Message) -> None:
+    await send_logs(message)
 
 
 @router.callback_query(F.data == "logs:list")
 async def list_logs(callback: CallbackQuery) -> None:
+    await send_logs(callback.message)
+    await callback.answer()
+
+
+async def send_logs(message: Message) -> None:
     async with async_session_factory() as session:
         logs = await LogRepository(session).latest(limit=10)
 
     if not logs:
-        await callback.message.answer("Логов пока нет.", reply_markup=main_menu())
-        await callback.answer()
+        await message.answer("Логов пока нет.", reply_markup=main_menu())
         return
 
     text = "\n\n".join(f"{log.created_at:%Y-%m-%d %H:%M} [{log.level}] {log.message}" for log in logs)
-    await callback.message.answer(text, reply_markup=main_menu())
-    await callback.answer()
+    await message.answer(text, reply_markup=main_menu())
+
+
+@router.message(F.text == HIGH_VIEW_POSTS)
+async def scan_high_view_posts_from_menu(message: Message) -> None:
+    await send_high_view_posts_scan(message)
 
 
 @router.callback_query(F.data == "posts:scan_high_views")
 async def scan_high_view_posts(callback: CallbackQuery) -> None:
     await callback.answer("Парсинг запущен")
-    await callback.message.answer(
+    await send_high_view_posts_scan(callback.message)
+
+
+async def send_high_view_posts_scan(message: Message) -> None:
+    await message.answer(
         "Начал парсить активные каналы за последние 24 часа. Это может занять немного времени."
     )
 
@@ -180,7 +231,7 @@ async def scan_high_view_posts(callback: CallbackQuery) -> None:
                 payload={"exception_type": type(error).__name__},
             )
             await session.commit()
-        await callback.message.answer("Ошибка парсинга. Подробности записаны в logs/app.log.", reply_markup=main_menu())
+        await message.answer("Ошибка парсинга. Подробности записаны в logs/app.log.", reply_markup=main_menu())
         return
 
     summary = (
@@ -192,11 +243,11 @@ async def scan_high_view_posts(callback: CallbackQuery) -> None:
         f"Постов сохранено: {result.posts_saved}\n"
         f"Постов 20к+: {len(result.high_view_posts)}"
     )
-    await callback.message.answer(summary, reply_markup=main_menu())
+    await message.answer(summary, reply_markup=main_menu())
 
     if result.errors:
         error_lines = "\n".join(f"- {error}" for error in result.errors[:10])
-        await callback.message.answer(f"Ошибки парсинга:\n{error_lines}")
+        await message.answer(f"Ошибки парсинга:\n{error_lines}")
 
     if not result.high_view_posts:
         return
@@ -211,7 +262,12 @@ async def scan_high_view_posts(callback: CallbackQuery) -> None:
             line = f"{line}\n{text_preview}"
         lines.append(line)
 
-    await callback.message.answer("\n\n".join(lines))
+    await message.answer("\n\n".join(lines))
+
+
+@router.message(F.text == SETTINGS)
+async def show_settings_from_menu(message: Message) -> None:
+    await message.answer("Настройки будут добавлены на следующем этапе.", reply_markup=main_menu())
 
 
 @router.callback_query(F.data == "settings:show")
