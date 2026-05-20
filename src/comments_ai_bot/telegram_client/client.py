@@ -1,11 +1,14 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import logging
 from pathlib import Path
 
 from telethon import TelegramClient, errors
 from telethon.tl.custom.message import Message
 
 from comments_ai_bot.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -14,6 +17,7 @@ class TelegramPost:
     text: str | None
     views: int | None
     date: datetime
+    grouped_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -73,11 +77,60 @@ class TelegramAccountClient:
         if hours is not None:
             min_date = datetime.now(timezone.utc) - timedelta(hours=hours)
 
-        return [
-            TelegramPost(id=message.id, text=message.message, views=message.views, date=message.date)
+        filtered_messages = [
+            message
             for message in messages
             if not message.action and (min_date is None or message.date >= min_date)
         ]
+        posts = self._collapse_grouped_messages(filtered_messages)
+        logger.info(
+            "Fetched recent posts from %s: raw_messages=%s logical_posts=%s",
+            channel_username,
+            len(filtered_messages),
+            len(posts),
+        )
+        return posts
+
+    def _collapse_grouped_messages(self, messages: list[Message]) -> list[TelegramPost]:
+        grouped_messages: dict[int, list[Message]] = {}
+        standalone_posts: list[TelegramPost] = []
+
+        for message in messages:
+            grouped_id = getattr(message, "grouped_id", None)
+            if grouped_id is None:
+                standalone_posts.append(self._message_to_post(message))
+                continue
+
+            grouped_messages.setdefault(grouped_id, []).append(message)
+
+        grouped_posts = [
+            self._album_to_post(grouped_id, album_messages)
+            for grouped_id, album_messages in grouped_messages.items()
+        ]
+        return sorted([*standalone_posts, *grouped_posts], key=lambda post: post.date, reverse=True)
+
+    def _message_to_post(self, message: Message) -> TelegramPost:
+        return TelegramPost(
+            id=message.id,
+            text=message.message,
+            views=message.views,
+            date=message.date,
+            grouped_id=getattr(message, "grouped_id", None),
+        )
+
+    def _album_to_post(self, grouped_id: int, messages: list[Message]) -> TelegramPost:
+        sorted_messages = sorted(messages, key=lambda message: message.id)
+        canonical = sorted_messages[0]
+        text_message = next((message for message in sorted_messages if message.message), canonical)
+        views = max((message.views or 0 for message in sorted_messages), default=0)
+
+        return TelegramPost(
+            id=canonical.id,
+            text=text_message.message,
+            views=views,
+            date=canonical.date,
+            grouped_id=grouped_id,
+        )
 
     async def can_comment(self, channel_username: str, post_id: int) -> CommentAvailability:
         entity = await self.client.get_entity(channel_username)
@@ -89,8 +142,7 @@ class TelegramAccountClient:
             return CommentAvailability(False, "Комментарии у поста не включены")
 
         try:
-            discussion_peer, _ = await self.client._get_comment_data(entity, post_id)
-            permissions = await self.client.get_permissions(discussion_peer, "me")
+            await self.client._get_comment_data(entity, post_id)
         except errors.ChatAdminRequiredError:
             return CommentAvailability(False, "Нет доступа к группе обсуждений")
         except errors.ChannelPrivateError:
@@ -101,9 +153,6 @@ class TelegramAccountClient:
             return CommentAvailability(False, f"Ошибка проверки комментариев: {error}")
         except (ValueError, StopIteration, AttributeError) as error:
             return CommentAvailability(False, f"Обсуждение недоступно: {error}")
-
-        if getattr(permissions, "send_messages", None) is False:
-            return CommentAvailability(False, "Нет права писать в обсуждение")
 
         return CommentAvailability(True)
 
