@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
@@ -9,6 +10,8 @@ from telethon.tl.custom.message import Message
 from comments_ai_bot.core.config import settings
 
 logger = logging.getLogger(__name__)
+COMMENT_VERIFY_ATTEMPTS = 3
+COMMENT_VERIFY_DELAY_SECONDS = 2
 
 
 @dataclass(frozen=True)
@@ -200,6 +203,7 @@ class TelegramAccountClient:
                     text,
                     comment_to=candidate_post_id,
                 )
+                await self._verify_sent_comment(message, text)
                 return message.id
             except (
                 errors.ChatAdminRequiredError,
@@ -215,3 +219,12 @@ class TelegramAccountClient:
         if last_error is not None:
             raise last_error
         raise RuntimeError("Не найден post_id для отправки комментария")
+
+    async def _verify_sent_comment(self, message: Message, expected_text: str) -> None:
+        for _ in range(COMMENT_VERIFY_ATTEMPTS):
+            await asyncio.sleep(COMMENT_VERIFY_DELAY_SECONDS)
+            saved_message = await self.client.get_messages(message.peer_id, ids=message.id)
+            if saved_message and saved_message.message == expected_text:
+                return
+
+        raise RuntimeError("Комментарий отправлен, но не найден при проверке")
