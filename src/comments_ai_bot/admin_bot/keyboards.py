@@ -3,7 +3,6 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardBu
 
 ADD_CHANNEL = "Добавить канал"
 CHANNEL_LIST = "Список каналов"
-HIGH_VIEW_POSTS = "Посты 20к+"
 READY_TO_COMMENT_POSTS = "Ready 20к+"
 TEST_COMMENT = "Тест коммент"
 TELEGRAM_AUTH = "Аккаунты TG"
@@ -16,9 +15,9 @@ def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=ADD_CHANNEL), KeyboardButton(text=CHANNEL_LIST)],
-            [KeyboardButton(text=HIGH_VIEW_POSTS), KeyboardButton(text=READY_TO_COMMENT_POSTS)],
-            [KeyboardButton(text=TEST_COMMENT), KeyboardButton(text=TELEGRAM_AUTH)],
-            [KeyboardButton(text=LOGS), KeyboardButton(text=SETTINGS)],
+            [KeyboardButton(text=READY_TO_COMMENT_POSTS), KeyboardButton(text=TEST_COMMENT)],
+            [KeyboardButton(text=TELEGRAM_AUTH), KeyboardButton(text=LOGS)],
+            [KeyboardButton(text=SETTINGS)],
         ],
         resize_keyboard=True,
         input_field_placeholder="Выбери действие",

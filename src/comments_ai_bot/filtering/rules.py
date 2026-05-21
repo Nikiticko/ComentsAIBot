@@ -16,4 +16,4 @@ FORBIDDEN_TOPICS = {
     "благотворительные сборы",
 }
 
-MIN_POST_VIEWS = 20
+MIN_POST_VIEWS = 20_000

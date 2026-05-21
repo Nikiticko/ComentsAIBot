@@ -11,7 +11,6 @@ from comments_ai_bot.admin_bot.keyboards import (
     ADD_CHANNEL,
     CANCEL,
     CHANNEL_LIST,
-    HIGH_VIEW_POSTS,
     LOGS,
     READY_TO_COMMENT_POSTS,
     SETTINGS,
@@ -27,11 +26,9 @@ from comments_ai_bot.admin_bot.states import ChannelStates
 from comments_ai_bot.db.repositories import (
     ChannelRepository,
     LogRepository,
-    PostRepository,
     TelegramAccountRepository,
 )
 from comments_ai_bot.db.session import async_session_factory
-from comments_ai_bot.core.types import PostStatus
 from comments_ai_bot.monitoring.manual_scan import ManualPostScanner
 from comments_ai_bot.publishing.test_comments import TestCommentSender
 from comments_ai_bot.telegram_client.auth import remove_session_files, start_qr_login, wait_qr_login
@@ -40,6 +37,8 @@ router = Router()
 logger = logging.getLogger(__name__)
 USERNAME_RE = re.compile(r"^@[A-Za-z0-9_]{5,32}$")
 TELEGRAM_MESSAGE_LIMIT = 3500
+READY_POSTS_LIMIT = 20
+TEST_SENT_LIMIT = 30
 
 
 def normalize_channel_username(value: str) -> str | None:
@@ -219,19 +218,14 @@ async def send_logs(message: Message) -> None:
     await message.answer(text, reply_markup=main_menu())
 
 
-@router.message(F.text == HIGH_VIEW_POSTS)
-async def scan_high_view_posts_from_menu(message: Message) -> None:
-    await send_high_view_posts_scan(message)
-
-
 @router.message(F.text == READY_TO_COMMENT_POSTS)
 async def ready_to_comment_posts_from_menu(message: Message) -> None:
-    await send_ready_to_comment_posts(message)
+    await ReadyPostsReporter(message).send()
 
 
 @router.message(F.text == TEST_COMMENT)
 async def send_test_comment_from_menu(message: Message) -> None:
-    await send_test_comments(message)
+    await TestCommentsReporter(message).send()
 
 
 @router.message(F.text == TELEGRAM_AUTH)
@@ -374,150 +368,101 @@ async def delete_telegram_account(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == "posts:scan_high_views")
 async def scan_high_view_posts(callback: CallbackQuery) -> None:
     await callback.answer("Парсинг запущен")
-    await send_high_view_posts_scan(callback.message)
+    await ReadyPostsReporter(callback.message).send()
 
 
-async def send_ready_to_comment_posts(message: Message) -> None:
-    async with async_session_factory() as session:
-        rows = await PostRepository(session).list_by_status(PostStatus.READY_TO_COMMENT.value, limit=50)
+class ReadyPostsReporter:
+    def __init__(self, message: Message) -> None:
+        self.message = message
 
-    if not rows:
-        await message.answer("Постов со статусом ready_to_comment пока нет.", reply_markup=main_menu())
-        return
+    async def send(self) -> None:
+        await self.message.answer("Сканирую каналы и ищу Ready 20к+.")
 
-    lines = []
-    for post, channel in rows:
-        text_preview = (post.text or "").replace("\n", " ").strip()
-        if len(text_preview) > 80:
-            text_preview = f"{text_preview[:77]}..."
-        url = f"https://t.me/{channel.username.removeprefix('@')}/{post.telegram_post_id}"
-        line = (
-            f"{channel.username} | {post.views_count or 0} просмотров\n"
-            f"status: {post.status}\n"
-            f"{url}"
-        )
-        if text_preview:
-            line = f"{line}\n{text_preview}"
-        lines.append(line)
-
-    for chunk in split_messages(lines):
-        await message.answer(chunk, reply_markup=main_menu())
-
-
-async def send_high_view_posts_scan(message: Message) -> None:
-    await message.answer(
-        "Начал парсить активные каналы за последние 24 часа. Это может занять немного времени."
-    )
-
-    try:
-        result = await ManualPostScanner().scan_high_view_posts()
-    except Exception as error:
-        logger.exception("High-view post scan button failed")
-        async with async_session_factory() as session:
-            await LogRepository(session).error(
-                "scan_button_failed",
-                str(error),
-                payload={"exception_type": type(error).__name__},
+        try:
+            result = await ManualPostScanner().scan_high_view_posts()
+        except Exception as error:
+            logger.exception("Ready posts scan button failed")
+            async with async_session_factory() as session:
+                await LogRepository(session).error(
+                    "ready_posts_scan_failed",
+                    str(error),
+                    payload={"exception_type": type(error).__name__},
+                )
+                await session.commit()
+            await self.message.answer(
+                "Ошибка скана. Подробности записаны в logs/app.log.",
+                reply_markup=main_menu(),
             )
-            await session.commit()
-        await message.answer("Ошибка парсинга. Подробности записаны в logs/app.log.", reply_markup=main_menu())
-        return
+            return
 
-    summary = (
-        "Парсинг завершён.\n"
-        f"Каналов: {result.channels_total}\n"
-        f"Ошибок каналов: {result.channels_failed}\n"
-        f"Период: последние {result.scan_hours} часа\n"
-        f"Постов проверено: {result.posts_checked}\n"
-        f"Постов сохранено: {result.posts_saved}\n"
-        f"Постов 20к+: {len(result.high_view_posts)}"
-    )
-    await message.answer(summary, reply_markup=main_menu())
-
-    if result.channel_stats:
-        stats_lines = [
-            (
-                f"{channel}: проверено {stats['checked']}, "
-                f"20к+ {stats['high_view']}, комменты открыты {stats['commentable']}"
+        ready_posts = [
+            post
+            for post in sorted(
+                result.high_view_posts,
+                key=lambda item: item.views_count,
+                reverse=True,
             )
-            for channel, stats in result.channel_stats.items()
+            if post.comments_available
         ]
-        await message.answer("По каналам:\n" + "\n".join(stats_lines))
-
-    if result.account_stats:
-        account_lines = [
-            f"{account}: каналов {count}"
-            for account, count in result.account_stats.items()
-        ]
-        await message.answer("По аккаунтам:\n" + "\n".join(account_lines))
-
-    if result.errors:
-        error_lines = "\n".join(f"- {error}" for error in result.errors[:10])
-        await message.answer(f"Ошибки парсинга:\n{error_lines}")
-
-    if not result.high_view_posts:
-        return
-
-    sorted_posts = sorted(result.high_view_posts, key=lambda post: post.views_count, reverse=True)
-    lines = []
-    for post in sorted_posts:
-        text_preview = (post.text or "").replace("\n", " ").strip()
-        if len(text_preview) > 80:
-            text_preview = f"{text_preview[:77]}..."
-        comment_status = "комменты открыты" if post.comments_available else "комменты закрыты"
-        line = (
-            f"{post.channel_username} | {post.views_count} просмотров | {post.date}\n"
-            f"{comment_status} | аккаунт: {post.account}\n"
-            f"{post.url}"
+        summary = (
+            "Ready 20к+ готово.\n"
+            f"Каналов: {result.channels_total}, ошибок: {result.channels_failed}\n"
+            f"Проверено: {result.posts_checked}, 20к+: {len(result.high_view_posts)}, "
+            f"ready: {len(ready_posts)}"
         )
-        if post.comments_reason and not post.comments_available:
-            line = f"{line}\nПричина: {post.comments_reason}"
-        if text_preview:
-            line = f"{line}\n{text_preview}"
-        lines.append(line)
+        await self.message.answer(summary, reply_markup=main_menu())
 
-    for chunk in split_messages(lines):
-        await message.answer(chunk)
+        if result.errors:
+            await self.message.answer("Ошибки: " + "; ".join(result.errors[:5]))
+
+        if not ready_posts:
+            return
+
+        lines = [
+            f"{post.channel_username} | {post.views_count} | {post.url}"
+            for post in ready_posts[:READY_POSTS_LIMIT]
+        ]
+        if len(ready_posts) > READY_POSTS_LIMIT:
+            lines.append(f"...ещё {len(ready_posts) - READY_POSTS_LIMIT}")
+
+        for chunk in split_messages(lines):
+            await self.message.answer(chunk)
 
 
-async def send_test_comments(message: Message) -> None:
-    await message.answer(
-        "Запускаю тест: по одному комментарию в каждый активный канал. "
-        "Пост выбирается случайно за последние 24 часа."
-    )
+class TestCommentsReporter:
+    def __init__(self, message: Message) -> None:
+        self.message = message
 
-    result = await TestCommentSender().send_one_per_channel()
-    if result.errors:
-        error_text = "\n".join(f"- {error}" for error in result.errors)
-        await message.answer(f"Тест не выполнен:\n{error_text}")
-        return
+    async def send(self) -> None:
+        await self.message.answer("Запускаю тестовую отправку.")
 
-    summary = (
-        "Тест завершён.\n"
-        f"Каналов всего: {result.channels_total}\n"
-        f"Каналов обработано: {result.channels_processed}\n"
-        f"Аккаунт: {result.account}\n"
-        f"Постов найдено: {result.posts_found}\n"
-        f"Комментариев отправлено: {result.comments_sent}\n"
-        f"Ошибок отправки: {result.comments_failed}\n"
-        f"Пропущено: {result.comments_skipped}"
-    )
-    if result.stopped_reason:
-        summary = f"{summary}\nОстановка: {result.stopped_reason}"
-    await message.answer(summary, reply_markup=main_menu())
+        result = await TestCommentSender().send_one_per_channel()
+        sent_items = [item for item in result.items if item.status == "sent"]
+        if result.errors and not sent_items:
+            await self.message.answer(
+                "Тест не выполнен: " + "; ".join(result.errors),
+                reply_markup=main_menu(),
+            )
+            return
 
-    if not result.items:
-        return
+        summary = (
+            "Тест завершён.\n"
+            f"Проверенных отправок: {len(sent_items)}\n"
+            f"Аккаунт: {result.account or '-'}"
+        )
+        if result.stopped_reason:
+            summary = f"{summary}\nОстановка: {result.stopped_reason}"
+        await self.message.answer(summary, reply_markup=main_menu())
 
-    lines = []
-    for item in result.items[:30]:
-        line = f"{item.status}: {item.post_url}"
-        if item.reason:
-            line = f"{line}\nПричина: {item.reason}"
-        lines.append(line)
+        if not sent_items:
+            return
 
-    for chunk in split_messages(lines):
-        await message.answer(chunk)
+        lines = [f"sent: {item.post_url}" for item in sent_items[:TEST_SENT_LIMIT]]
+        if len(sent_items) > TEST_SENT_LIMIT:
+            lines.append(f"...ещё {len(sent_items) - TEST_SENT_LIMIT}")
+
+        for chunk in split_messages(lines):
+            await self.message.answer(chunk)
 
 
 def split_messages(items: list[str], limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
