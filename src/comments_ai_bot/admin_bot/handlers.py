@@ -501,6 +501,8 @@ async def send_test_comments(message: Message) -> None:
         f"Ошибок отправки: {result.comments_failed}\n"
         f"Пропущено: {result.comments_skipped}"
     )
+    if result.stopped_reason:
+        summary = f"{summary}\nОстановка: {result.stopped_reason}"
     await message.answer(summary, reply_markup=main_menu())
 
     if not result.items:

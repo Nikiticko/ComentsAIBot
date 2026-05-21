@@ -25,6 +25,7 @@ class TelegramPost:
 class CommentAvailability:
     available: bool
     reason: str | None = None
+    post_id: int | None = None
 
 
 class TelegramAccountClient:
@@ -163,7 +164,7 @@ class TelegramAccountClient:
 
             try:
                 await self.client._get_comment_data(entity, candidate_post_id)
-                return CommentAvailability(True)
+                return CommentAvailability(True, post_id=candidate_post_id)
             except errors.ChatAdminRequiredError:
                 return CommentAvailability(False, "Нет доступа к группе обсуждений")
             except errors.ChannelPrivateError:
@@ -200,6 +201,14 @@ class TelegramAccountClient:
                     comment_to=candidate_post_id,
                 )
                 return message.id
+            except (
+                errors.ChatAdminRequiredError,
+                errors.ChatWriteForbiddenError,
+                errors.UserBannedInChannelError,
+            ):
+                raise
+            except errors.MsgIdInvalidError as error:
+                last_error = error
             except (errors.RPCError, ValueError) as error:
                 last_error = error
 

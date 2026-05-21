@@ -1,9 +1,10 @@
+import asyncio
 from dataclasses import dataclass, field
 import logging
 import random
 from pathlib import Path
 
-from telethon.errors import RPCError
+from telethon.errors import ChatWriteForbiddenError, RPCError, UserBannedInChannelError
 
 from comments_ai_bot.core.config import settings
 from comments_ai_bot.core.types import CommentStatus, LogLevel, PostStatus
@@ -18,7 +19,15 @@ from comments_ai_bot.db.session import async_session_factory
 from comments_ai_bot.monitoring.manual_scan import POST_SCAN_HOURS, POST_SCAN_LIMIT
 from comments_ai_bot.telegram_client.client import CommentAvailability, TelegramAccountClient
 
-TEST_COMMENT_TEXT = "четко"
+TEST_COMMENT_LIMIT = 3
+TEST_COMMENT_DELAY_SECONDS = 8
+TEST_COMMENT_TEXTS = (
+    "четко",
+    "согласен",
+    "хорошо сказано",
+    "в точку",
+    "интересно",
+)
 logger = logging.getLogger(__name__)
 
 
@@ -37,6 +46,7 @@ class TestCommentResult:
     comments_sent: int = 0
     comments_failed: int = 0
     comments_skipped: int = 0
+    stopped_reason: str | None = None
     errors: list[str] = field(default_factory=list)
     items: list[TestCommentItem] = field(default_factory=list)
 
@@ -75,7 +85,16 @@ class TestCommentSender:
                 result.posts_found = len(posts)
 
                 for post in posts:
-                    await self._send_to_post(channel, post, telegram, result)
+                    if result.comments_sent >= TEST_COMMENT_LIMIT:
+                        result.stopped_reason = f"Достигнут лимит {TEST_COMMENT_LIMIT} комментария."
+                        break
+
+                    should_continue = await self._send_to_post(channel, post, telegram, result)
+                    if not should_continue:
+                        break
+
+                    if result.comments_sent:
+                        await asyncio.sleep(TEST_COMMENT_DELAY_SECONDS)
 
             if account is not None:
                 async with async_session_factory() as session:
@@ -99,7 +118,7 @@ class TestCommentSender:
         post,
         telegram: TelegramAccountClient,
         result: TestCommentResult,
-    ) -> None:
+    ) -> bool:
         post_url = f"https://t.me/{channel.username.removeprefix('@')}/{post.id}"
         availability = await self._check_comments(channel.username, post, telegram)
 
@@ -112,24 +131,39 @@ class TestCommentSender:
                 PostStatus.COMMENTS_CLOSED.value,
                 availability.reason,
             )
-            return
+            return True
 
         db_post_id = await self._save_post(channel, post, PostStatus.READY_TO_COMMENT.value)
+        comment_text = random.choice(TEST_COMMENT_TEXTS)
+        comment_post_ids = (availability.post_id or post.id,)
 
         try:
             telegram_comment_id = await telegram.send_comment(
                 channel.username,
                 post.id,
-                TEST_COMMENT_TEXT,
-                post.message_ids,
+                comment_text,
+                comment_post_ids,
             )
+        except (ChatWriteForbiddenError, UserBannedInChannelError) as error:
+            logger.warning("Test comment stopped for %s/%s: %s", channel.username, post.id, error)
+            result.stopped_reason = f"Аккаунт не может писать в обсуждение: {error}"
+            result.items.append(TestCommentItem(post_url, "stopped", result.stopped_reason))
+            await self._write_log(
+                LogLevel.WARNING,
+                "test_comments_stopped",
+                f"Тест остановлен: {post_url} {error}",
+                "post",
+                db_post_id,
+            )
+            return False
         except (RPCError, ValueError, RuntimeError) as error:
-            logger.exception("Failed to send test comment to %s/%s", channel.username, post.id)
+            logger.warning("Failed to send test comment to %s/%s: %s", channel.username, post.id, error)
             result.comments_failed += 1
             result.items.append(TestCommentItem(post_url, "failed", str(error)))
             await self._save_comment(
                 db_post_id,
                 CommentStatus.FAILED.value,
+                comment_text,
                 error_message=str(error),
             )
             await self._write_log(
@@ -139,13 +173,14 @@ class TestCommentSender:
                 "post",
                 db_post_id,
             )
-            return
+            return True
 
         result.comments_sent += 1
         result.items.append(TestCommentItem(post_url, "sent"))
         await self._save_comment(
             db_post_id,
             CommentStatus.PUBLISHED.value,
+            comment_text,
             telegram_comment_id=telegram_comment_id,
         )
         await self._write_log(
@@ -155,6 +190,7 @@ class TestCommentSender:
             "post",
             db_post_id,
         )
+        return True
 
     async def _check_comments(
         self,
@@ -193,6 +229,7 @@ class TestCommentSender:
         self,
         post_id: int,
         status: str,
+        text: str,
         *,
         telegram_comment_id: int | None = None,
         error_message: str | None = None,
@@ -200,7 +237,7 @@ class TestCommentSender:
         async with async_session_factory() as session:
             await CommentRepository(session).create(
                 post_id=post_id,
-                text=TEST_COMMENT_TEXT,
+                text=text,
                 status=status,
                 telegram_comment_id=telegram_comment_id,
                 error_message=error_message,
