@@ -482,11 +482,11 @@ async def send_high_view_posts_scan(message: Message) -> None:
 
 async def send_test_comments(message: Message) -> None:
     await message.answer(
-        "Запускаю тест: выберу случайный активный канал и отправлю "
-        "`четко` в доступные посты за 24 часа."
+        "Запускаю тест: по одному комментарию в каждый активный канал. "
+        "Пост выбирается случайно за последние 24 часа."
     )
 
-    result = await TestCommentSender().send_to_random_channel()
+    result = await TestCommentSender().send_one_per_channel()
     if result.errors:
         error_text = "\n".join(f"- {error}" for error in result.errors)
         await message.answer(f"Тест не выполнен:\n{error_text}")
@@ -494,7 +494,8 @@ async def send_test_comments(message: Message) -> None:
 
     summary = (
         "Тест завершён.\n"
-        f"Канал: {result.channel_username}\n"
+        f"Каналов всего: {result.channels_total}\n"
+        f"Каналов обработано: {result.channels_processed}\n"
         f"Аккаунт: {result.account}\n"
         f"Постов найдено: {result.posts_found}\n"
         f"Комментариев отправлено: {result.comments_sent}\n"

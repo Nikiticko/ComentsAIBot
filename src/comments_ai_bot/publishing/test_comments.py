@@ -19,8 +19,6 @@ from comments_ai_bot.db.session import async_session_factory
 from comments_ai_bot.monitoring.manual_scan import POST_SCAN_HOURS, POST_SCAN_LIMIT
 from comments_ai_bot.telegram_client.client import CommentAvailability, TelegramAccountClient
 
-TEST_COMMENT_LIMIT = 3
-TEST_COMMENT_DELAY_SECONDS = 8
 TEST_COMMENT_TEXTS = (
     "четко",
     "согласен",
@@ -28,6 +26,7 @@ TEST_COMMENT_TEXTS = (
     "в точку",
     "интересно",
 )
+SEND_DELAY_RANGE_SECONDS = (30, 60)
 logger = logging.getLogger(__name__)
 
 
@@ -42,6 +41,8 @@ class TestCommentItem:
 class TestCommentResult:
     channel_username: str | None = None
     account: str | None = None
+    channels_total: int = 0
+    channels_processed: int = 0
     posts_found: int = 0
     comments_sent: int = 0
     comments_failed: int = 0
@@ -52,12 +53,13 @@ class TestCommentResult:
 
 
 class TestCommentSender:
-    async def send_to_random_channel(self) -> TestCommentResult:
+    async def send_one_per_channel(self) -> TestCommentResult:
         result = TestCommentResult()
 
         async with async_session_factory() as session:
             channels = await ChannelRepository(session).list_active()
             accounts = await TelegramAccountRepository(session).list_active()
+            result.channels_total = len(channels)
 
         if not channels:
             result.errors.append("Нет активных каналов.")
@@ -68,38 +70,27 @@ class TestCommentSender:
             result.errors.append("Нет активного Telegram-аккаунта.")
             return result
 
-        channel = random.choice(channels)
-        account = random.choice(accounts) if accounts else None
-        session_name = account.session_name if account else None
-        result.channel_username = channel.username
-        result.account = session_name or settings.telegram_session_name
+        random.shuffle(channels)
+        account_sessions = [account.session_name for account in accounts] or [None]
+        account_ids = {account.session_name: account.id for account in accounts}
+        result.account = ", ".join(session or settings.telegram_session_name for session in account_sessions)
 
         try:
-            async with TelegramAccountClient(session_name) as telegram:
-                posts = await telegram.fetch_recent_posts(
-                    channel.username,
-                    limit=POST_SCAN_LIMIT,
-                    hours=POST_SCAN_HOURS,
-                )
-                random.shuffle(posts)
-                result.posts_found = len(posts)
+            for index, channel in enumerate(channels):
+                session_name = account_sessions[index % len(account_sessions)]
+                result.channel_username = channel.username
 
-                for post in posts:
-                    if result.comments_sent >= TEST_COMMENT_LIMIT:
-                        result.stopped_reason = f"Достигнут лимит {TEST_COMMENT_LIMIT} комментария."
-                        break
+                async with TelegramAccountClient(session_name) as telegram:
+                    should_continue = await self._send_one_to_channel(channel, telegram, result)
 
-                    should_continue = await self._send_to_post(channel, post, telegram, result)
-                    if not should_continue:
-                        break
+                result.channels_processed += 1
+                if session_name is not None:
+                    async with async_session_factory() as session:
+                        await TelegramAccountRepository(session).mark_used(account_ids[session_name])
+                        await session.commit()
 
-                    if result.comments_sent:
-                        await asyncio.sleep(TEST_COMMENT_DELAY_SECONDS)
-
-            if account is not None:
-                async with async_session_factory() as session:
-                    await TelegramAccountRepository(session).mark_used(account.id)
-                    await session.commit()
+                if not should_continue:
+                    break
         except (RPCError, ValueError, RuntimeError) as error:
             logger.exception("Test comment sending failed")
             result.errors.append(str(error))
@@ -112,13 +103,39 @@ class TestCommentSender:
 
         return result
 
+    async def _send_one_to_channel(
+        self,
+        channel,
+        telegram: TelegramAccountClient,
+        result: TestCommentResult,
+    ) -> bool:
+        posts = await telegram.fetch_recent_posts(
+            channel.username,
+            limit=POST_SCAN_LIMIT,
+            hours=POST_SCAN_HOURS,
+        )
+        random.shuffle(posts)
+        result.posts_found += len(posts)
+
+        for post in posts:
+            send_status = await self._send_to_post(channel, post, telegram, result)
+            if send_status == "sent":
+                return True
+            if send_status == "done":
+                return True
+            if send_status == "stop":
+                return False
+
+        result.items.append(TestCommentItem(channel.username, "skipped", "Нет доступного поста для комментария"))
+        return True
+
     async def _send_to_post(
         self,
         channel,
         post,
         telegram: TelegramAccountClient,
         result: TestCommentResult,
-    ) -> bool:
+    ) -> str:
         post_url = f"https://t.me/{channel.username.removeprefix('@')}/{post.id}"
         availability = await self._check_comments(channel.username, post, telegram)
 
@@ -131,13 +148,14 @@ class TestCommentSender:
                 PostStatus.COMMENTS_CLOSED.value,
                 availability.reason,
             )
-            return True
+            return "skip"
 
         db_post_id = await self._save_post(channel, post, PostStatus.READY_TO_COMMENT.value)
         comment_text = random.choice(TEST_COMMENT_TEXTS)
         comment_post_ids = (availability.post_id or post.id,)
 
         try:
+            await self._sleep_before_send()
             telegram_comment_id = await telegram.send_comment(
                 channel.username,
                 post.id,
@@ -155,7 +173,7 @@ class TestCommentSender:
                 "post",
                 db_post_id,
             )
-            return False
+            return "stop"
         except (RPCError, ValueError, RuntimeError) as error:
             logger.warning("Failed to send test comment to %s/%s: %s", channel.username, post.id, error)
             result.comments_failed += 1
@@ -173,7 +191,7 @@ class TestCommentSender:
                 "post",
                 db_post_id,
             )
-            return True
+            return "done"
 
         result.comments_sent += 1
         result.items.append(TestCommentItem(post_url, "sent"))
@@ -190,7 +208,12 @@ class TestCommentSender:
             "post",
             db_post_id,
         )
-        return True
+        return "sent"
+
+    async def _sleep_before_send(self) -> None:
+        delay = random.randint(*SEND_DELAY_RANGE_SECONDS)
+        logger.info("Waiting %s seconds before test comment", delay)
+        await asyncio.sleep(delay)
 
     async def _check_comments(
         self,
