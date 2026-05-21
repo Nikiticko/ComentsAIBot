@@ -1,10 +1,16 @@
 import asyncio
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 import logging
 import random
 from pathlib import Path
 
-from telethon.errors import ChatWriteForbiddenError, RPCError, UserBannedInChannelError
+from telethon.errors import (
+    ChatWriteForbiddenError,
+    FloodWaitError,
+    RPCError,
+    UserBannedInChannelError,
+)
 
 from comments_ai_bot.core.config import settings
 from comments_ai_bot.core.types import CommentStatus, LogLevel, PostStatus
@@ -13,6 +19,7 @@ from comments_ai_bot.db.repositories import (
     CommentRepository,
     LogRepository,
     PostRepository,
+    SettingRepository,
     TelegramAccountRepository,
 )
 from comments_ai_bot.db.session import async_session_factory
@@ -27,6 +34,16 @@ TEST_COMMENT_TEXTS = (
     "интересно",
 )
 SEND_DELAY_RANGE_SECONDS = (30, 60)
+CHANNEL_COOLDOWNS_KEY = "test_comment_channel_cooldowns"
+MIN_POST_AGE_MINUTES = 10
+RECENT_ATTEMPT_HOURS = 24
+CHANNEL_COOLDOWN_HOURS = {
+    "deleted_after_send": 24,
+    "need_join_discussion": 72,
+    "write_forbidden": 24,
+    "invalid_discussion_post": 6,
+    "flood_wait": 6,
+}
 logger = logging.getLogger(__name__)
 
 
@@ -35,6 +52,14 @@ class TestCommentItem:
     post_url: str
     status: str
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ClassifiedSendError:
+    code: str
+    message: str
+    cooldown_hours: int | None = None
+    account_level: bool = False
 
 
 @dataclass
@@ -59,6 +84,7 @@ class TestCommentSender:
         async with async_session_factory() as session:
             channels = await ChannelRepository(session).list_active()
             accounts = await TelegramAccountRepository(session).list_active()
+            cooldowns = await SettingRepository(session).get_value(CHANNEL_COOLDOWNS_KEY)
             result.channels_total = len(channels)
 
         if not channels:
@@ -73,10 +99,20 @@ class TestCommentSender:
         random.shuffle(channels)
         account_sessions = [account.session_name for account in accounts] or [None]
         account_ids = {account.session_name: account.id for account in accounts}
-        result.account = ", ".join(session or settings.telegram_session_name for session in account_sessions)
+        result.account = ", ".join(
+            session or settings.telegram_session_name for session in account_sessions
+        )
 
         try:
             for index, channel in enumerate(channels):
+                cooldown_reason = self._get_active_cooldown_reason(cooldowns, channel.username)
+                if cooldown_reason:
+                    result.comments_skipped += 1
+                    result.items.append(
+                        TestCommentItem(channel.username, "cooldown", cooldown_reason)
+                    )
+                    continue
+
                 session_name = account_sessions[index % len(account_sessions)]
                 result.channel_username = channel.username
 
@@ -86,7 +122,9 @@ class TestCommentSender:
                 result.channels_processed += 1
                 if session_name is not None:
                     async with async_session_factory() as session:
-                        await TelegramAccountRepository(session).mark_used(account_ids[session_name])
+                        await TelegramAccountRepository(session).mark_used(
+                            account_ids[session_name]
+                        )
                         await session.commit()
 
                 if not should_continue:
@@ -94,7 +132,7 @@ class TestCommentSender:
         except (RPCError, ValueError, RuntimeError) as error:
             logger.exception("Test comment sending failed")
             result.errors.append(str(error))
-            message = f"Тестовая отправка комментариев не выполнена: {error}"
+            message = f"Тестовая отправка не выполнена: {error}"
             await self._write_log(
                 LogLevel.ERROR,
                 "test_comments_failed",
@@ -115,9 +153,22 @@ class TestCommentSender:
             hours=POST_SCAN_HOURS,
         )
         random.shuffle(posts)
+        posts = self._filter_mature_posts(posts)
         result.posts_found += len(posts)
+        attempted_post_ids = await self._get_recent_attempted_post_ids(channel.id)
 
         for post in posts:
+            if post.id in attempted_post_ids:
+                result.comments_skipped += 1
+                result.items.append(
+                    TestCommentItem(
+                        self._post_url(channel.username, post.id),
+                        "skipped",
+                        "Пост уже проверялся за последние 24 часа",
+                    )
+                )
+                continue
+
             send_status = await self._send_to_post(channel, post, telegram, result)
             if send_status == "sent":
                 return True
@@ -126,7 +177,13 @@ class TestCommentSender:
             if send_status == "stop":
                 return False
 
-        result.items.append(TestCommentItem(channel.username, "skipped", "Нет доступного поста для комментария"))
+        result.items.append(
+            TestCommentItem(
+                channel.username,
+                "skipped",
+                "Нет доступного поста для комментария",
+            )
+        )
         return True
 
     async def _send_to_post(
@@ -136,7 +193,7 @@ class TestCommentSender:
         telegram: TelegramAccountClient,
         result: TestCommentResult,
     ) -> str:
-        post_url = f"https://t.me/{channel.username.removeprefix('@')}/{post.id}"
+        post_url = self._post_url(channel.username, post.id)
         availability = await self._check_comments(channel.username, post, telegram)
 
         if not availability.available:
@@ -162,35 +219,50 @@ class TestCommentSender:
                 comment_text,
                 comment_post_ids,
             )
-        except (ChatWriteForbiddenError, UserBannedInChannelError) as error:
-            logger.warning("Test comment stopped for %s/%s: %s", channel.username, post.id, error)
-            result.stopped_reason = f"Аккаунт не может писать в обсуждение: {error}"
-            result.items.append(TestCommentItem(post_url, "stopped", result.stopped_reason))
-            await self._write_log(
-                LogLevel.WARNING,
-                "test_comments_stopped",
-                f"Тест остановлен: {post_url} {error}",
-                "post",
-                db_post_id,
+        except (
+            ChatWriteForbiddenError,
+            UserBannedInChannelError,
+            FloodWaitError,
+            RPCError,
+            ValueError,
+            RuntimeError,
+        ) as error:
+            classified_error = self._classify_send_error(error)
+            logger.warning(
+                "Failed to send test comment to %s/%s: %s",
+                channel.username,
+                post.id,
+                classified_error.message,
             )
-            return "stop"
-        except (RPCError, ValueError, RuntimeError) as error:
-            logger.warning("Failed to send test comment to %s/%s: %s", channel.username, post.id, error)
             result.comments_failed += 1
-            result.items.append(TestCommentItem(post_url, "failed", str(error)))
+            result.items.append(TestCommentItem(post_url, "failed", classified_error.message))
             await self._save_comment(
                 db_post_id,
                 CommentStatus.FAILED.value,
                 comment_text,
-                error_message=str(error),
+                error_message=classified_error.message,
             )
             await self._write_log(
                 LogLevel.ERROR,
                 "test_comment_failed",
-                f"Не удалось отправить тестовый комментарий: {post_url} {error}",
+                "Не удалось отправить тестовый комментарий: "
+                f"{post_url} {classified_error.message}",
                 "post",
                 db_post_id,
+                payload={"error_code": classified_error.code},
             )
+
+            if classified_error.cooldown_hours is not None:
+                await self._put_channel_on_cooldown(
+                    channel.username,
+                    classified_error.code,
+                    classified_error.message,
+                    classified_error.cooldown_hours,
+                )
+
+            if classified_error.account_level:
+                result.stopped_reason = classified_error.message
+                return "stop"
             return "done"
 
         result.comments_sent += 1
@@ -210,10 +282,113 @@ class TestCommentSender:
         )
         return "sent"
 
+    def _filter_mature_posts(self, posts) -> list:
+        min_date = datetime.now(timezone.utc) - timedelta(minutes=MIN_POST_AGE_MINUTES)
+        return [post for post in posts if post.date <= min_date]
+
+    async def _get_recent_attempted_post_ids(self, channel_id: int) -> set[int]:
+        async with async_session_factory() as session:
+            return await CommentRepository(session).list_recent_attempted_post_ids(
+                channel_id=channel_id,
+                hours=RECENT_ATTEMPT_HOURS,
+            )
+
+    def _post_url(self, channel_username: str, post_id: int) -> str:
+        return f"https://t.me/{channel_username.removeprefix('@')}/{post_id}"
+
     async def _sleep_before_send(self) -> None:
         delay = random.randint(*SEND_DELAY_RANGE_SECONDS)
         logger.info("Waiting %s seconds before test comment", delay)
         await asyncio.sleep(delay)
+
+    def _classify_send_error(self, error: Exception) -> ClassifiedSendError:
+        message = str(error)
+        normalized = message.lower()
+
+        if isinstance(error, FloodWaitError):
+            return ClassifiedSendError(
+                "flood_wait",
+                message,
+                cooldown_hours=CHANNEL_COOLDOWN_HOURS["flood_wait"],
+                account_level=True,
+            )
+        if isinstance(error, (ChatWriteForbiddenError, UserBannedInChannelError)):
+            return ClassifiedSendError(
+                "write_forbidden",
+                message,
+                cooldown_hours=CHANNEL_COOLDOWN_HOURS["write_forbidden"],
+            )
+        if "join the discussion group" in normalized:
+            return ClassifiedSendError(
+                "need_join_discussion",
+                message,
+                cooldown_hours=CHANNEL_COOLDOWN_HOURS["need_join_discussion"],
+            )
+        if "не найден при проверке" in normalized:
+            return ClassifiedSendError(
+                "deleted_after_send",
+                message,
+                cooldown_hours=CHANNEL_COOLDOWN_HOURS["deleted_after_send"],
+            )
+        if "message id" in normalized or "msg_id" in normalized:
+            return ClassifiedSendError(
+                "invalid_discussion_post",
+                message,
+                cooldown_hours=CHANNEL_COOLDOWN_HOURS["invalid_discussion_post"],
+            )
+
+        return ClassifiedSendError("send_failed", message)
+
+    async def _put_channel_on_cooldown(
+        self,
+        channel_username: str,
+        reason_code: str,
+        reason: str,
+        hours: int,
+    ) -> None:
+        until = datetime.now(timezone.utc) + timedelta(hours=hours)
+        async with async_session_factory() as session:
+            repo = SettingRepository(session)
+            cooldowns = await repo.get_value(CHANNEL_COOLDOWNS_KEY)
+            cooldowns[channel_username] = {
+                "until": until.isoformat(),
+                "reason_code": reason_code,
+                "reason": reason,
+            }
+            await repo.set_value(CHANNEL_COOLDOWNS_KEY, cooldowns)
+            await LogRepository(session).warning(
+                "channel_cooldown_set",
+                "Канал "
+                f"{channel_username} поставлен на паузу до "
+                f"{until.isoformat()}: {reason}",
+                "channel",
+                payload={"reason_code": reason_code, "hours": hours},
+            )
+            await session.commit()
+
+    def _get_active_cooldown_reason(
+        self,
+        cooldowns: dict,
+        channel_username: str,
+    ) -> str | None:
+        item = cooldowns.get(channel_username)
+        if not item:
+            return None
+
+        until_raw = item.get("until")
+        if not until_raw:
+            return None
+
+        try:
+            until = datetime.fromisoformat(until_raw)
+        except ValueError:
+            return None
+
+        if until <= datetime.now(timezone.utc):
+            return None
+
+        reason = item.get("reason") or item.get("reason_code") or "channel cooldown"
+        return f"{reason}; пауза до {until:%Y-%m-%d %H:%M}"
 
     async def _check_comments(
         self,
@@ -274,7 +449,15 @@ class TestCommentSender:
         message: str,
         entity_type: str | None = None,
         entity_id: int | None = None,
+        payload: dict | None = None,
     ) -> None:
         async with async_session_factory() as session:
-            await LogRepository(session).create(level, event, message, entity_type, entity_id)
+            await LogRepository(session).create(
+                level,
+                event,
+                message,
+                entity_type,
+                entity_id,
+                payload,
+            )
             await session.commit()

@@ -1,11 +1,11 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from comments_ai_bot.core.types import LogLevel
-from comments_ai_bot.db.models import Channel, Comment, Log, Post, TelegramAccount
+from comments_ai_bot.db.models import Channel, Comment, Log, Post, Setting, TelegramAccount
 
 MAX_TELEGRAM_ACCOUNTS = 100
 
@@ -299,3 +299,41 @@ class CommentRepository:
         self.session.add(comment)
         await self.session.flush()
         return comment
+
+    async def list_recent_attempted_post_ids(
+        self,
+        *,
+        channel_id: int,
+        hours: int = 24,
+    ) -> set[int]:
+        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+        result = await self.session.execute(
+            select(Post.telegram_post_id)
+            .join(Comment, Comment.post_id == Post.id)
+            .where(Post.channel_id == channel_id, Comment.created_at >= since)
+        )
+        return set(result.scalars().all())
+
+
+class SettingRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get_value(self, key: str, default: dict[str, Any] | None = None) -> dict[str, Any]:
+        result = await self.session.execute(select(Setting).where(Setting.key == key))
+        setting = result.scalar_one_or_none()
+        if setting is None:
+            return default or {}
+        return setting.value or {}
+
+    async def set_value(self, key: str, value: dict[str, Any]) -> Setting:
+        result = await self.session.execute(select(Setting).where(Setting.key == key))
+        setting = result.scalar_one_or_none()
+        if setting is None:
+            setting = Setting(key=key, value=dict(value))
+            self.session.add(setting)
+        else:
+            setting.value = dict(value)
+
+        await self.session.flush()
+        return setting
