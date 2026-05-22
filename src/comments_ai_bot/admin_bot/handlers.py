@@ -141,12 +141,11 @@ async def send_channel_list(message: Message) -> None:
         await message.answer("Каналы ещё не добавлены.", reply_markup=main_menu())
         return
 
-    for channel in channels:
-        status = "активен" if channel.is_active else "выключен"
-        await message.answer(
-            f"{channel.username}\nСтатус: {status}",
-            reply_markup=channel_actions(channel.id, channel.is_active),
-        )
+    lines = [f"Каналов: {len(channels)}", ""]
+    lines.extend(channel.username for channel in channels)
+
+    for chunk in split_messages(lines):
+        await message.answer(chunk, reply_markup=main_menu())
 
 
 @router.callback_query(F.data.startswith("channel:toggle:"))

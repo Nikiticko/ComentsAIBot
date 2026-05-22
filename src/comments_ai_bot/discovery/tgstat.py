@@ -7,7 +7,7 @@ from urllib.error import URLError
 from urllib.parse import urlencode, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
 
-from telethon.errors import RPCError
+from telethon.errors import FloodWaitError, RPCError
 
 from comments_ai_bot.core.config import settings
 from comments_ai_bot.db.repositories import (
@@ -162,7 +162,10 @@ class TgstatChannelImporter:
 
         async with TelegramAccountClient(session_names[0]) as telegram:
             for candidate in candidates:
-                if await self._is_channel_readable(telegram, candidate, result):
+                readable = await self._is_channel_readable(telegram, candidate, result)
+                if readable is None:
+                    break
+                if readable:
                     await self._add_channel(candidate, result)
                 else:
                     result.channels_skipped += 1
@@ -248,10 +251,20 @@ class TgstatChannelImporter:
         telegram: TelegramAccountClient,
         candidate: TgstatChannelCandidate,
         result: TgstatImportResult,
-    ) -> bool:
+    ) -> bool | None:
         try:
             await telegram.fetch_recent_posts(candidate.username, limit=1)
             return True
+        except FloodWaitError as error:
+            seconds = getattr(error, "seconds", None)
+            message = (
+                "Telegram остановил проверку username"
+                if seconds is None
+                else f"Telegram остановил проверку username на {seconds} сек."
+            )
+            logger.warning("%s Последний канал: %s", message, candidate.username)
+            result.errors.append(message)
+            return None
         except (ValueError, RPCError) as error:
             logger.info("TGStat channel skipped %s: %s", candidate.username, error)
             return False
