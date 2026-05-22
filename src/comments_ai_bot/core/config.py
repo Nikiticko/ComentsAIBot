@@ -75,11 +75,11 @@ class Settings:
 
     @property
     def tgstat_import_max_channels(self) -> int:
-        return int(_getenv("TGSTAT_IMPORT_MAX_CHANNELS", "2500") or "2500")
+        return int(_getenv("TGSTAT_IMPORT_MAX_CHANNELS", "30000") or "30000")
 
     @property
     def tgstat_import_target_channels(self) -> int:
-        return int(_getenv("TGSTAT_IMPORT_TARGET_CHANNELS", "1000") or "1000")
+        return int(_getenv("TGSTAT_IMPORT_TARGET_CHANNELS", "10000") or "10000")
 
     @property
     def tgstat_import_concurrency(self) -> int:

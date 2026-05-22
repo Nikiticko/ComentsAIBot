@@ -65,6 +65,7 @@ Telegram FloodWait на массовом ResolveUsername. Лимиты можн�
 `TGSTAT_IMPORT_CONCURRENCY`, `TGSTAT_IMPORT_CATEGORIES`, `TGSTAT_IMPORT_SORTS`.
 Если нужна медленная проверка через Telegram перед добавлением, включи
 `TGSTAT_VALIDATE_CHANNELS=true`.
+По умолчанию цель импорта — 10 000 каналов.
 
 ## Dev-запуск
 
