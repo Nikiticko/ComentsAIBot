@@ -4,7 +4,7 @@ from html.parser import HTMLParser
 import logging
 import re
 from urllib.error import URLError
-from urllib.parse import urlencode, unquote, urljoin, urlparse
+from urllib.parse import parse_qsl, urlencode, unquote, urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 from telethon.errors import FloodWaitError, RPCError
@@ -25,6 +25,7 @@ TGSTAT_CHANNEL_RATINGS_PATH = "/ratings/channels"
 TGSTAT_PAGE_TIMEOUT_SECONDS = 15
 TGSTAT_REQUEST_DELAY_SECONDS = 1
 TGSTAT_VALIDATE_DELAY_SECONDS = 1
+TGSTAT_DB_INSERT_LOG_STEP = 100
 USERNAME_RE = re.compile(r"^@[A-Za-z0-9_]{5,32}$")
 USERNAME_IN_TEXT_RE = re.compile(r"(?<![A-Za-z0-9_])@([A-Za-z0-9_]{5,32})(?![A-Za-z0-9_])")
 TGSTAT_SERVICE_USERNAMES = {
@@ -59,6 +60,7 @@ class TgstatImportResult:
     channels_total_after: int = 0
     sources_checked: int = 0
     pages_checked: int = 0
+    pages_failed: int = 0
     candidates_found: int = 0
     channels_added: int = 0
     channels_existing: int = 0
@@ -158,12 +160,37 @@ class TgstatChannelImporter:
         result.channels_total_before = await self._count_channels()
         result.channels_total_after = result.channels_total_before
 
+        logger.info(
+            "TGStat import started: target=%s current=%s max_candidates=%s "
+            "max_pages=%s concurrency=%s validate=%s categories=%s sorts=%s",
+            self.target_total,
+            result.channels_total_before,
+            self.max_channels,
+            self.max_pages,
+            self.concurrency,
+            self.validate_channels,
+            len(self.categories),
+            ",".join(self.sorts),
+        )
+
         if result.channels_total_before >= self.target_total:
+            logger.info(
+                "TGStat import skipped: current channel count %s already reached target %s",
+                result.channels_total_before,
+                self.target_total,
+            )
             await self._log_result(result)
             return result
 
         candidates = await self._load_candidates(result)
         result.candidates_found = len(candidates)
+        logger.info(
+            "TGStat candidates loaded: candidates=%s pages_ok=%s pages_failed=%s sources=%s",
+            result.candidates_found,
+            result.pages_checked,
+            result.pages_failed,
+            result.sources_checked,
+        )
 
         if not candidates:
             result.errors.append(
@@ -174,6 +201,15 @@ class TgstatChannelImporter:
 
         if not self.validate_channels:
             await self._add_candidates_until_target(candidates, result)
+            logger.info(
+                "TGStat import finished without Telegram validation: before=%s after=%s "
+                "added=%s existing=%s target=%s",
+                result.channels_total_before,
+                result.channels_total_after,
+                result.channels_added,
+                result.channels_existing,
+                result.target_total,
+            )
             await self._log_result(result)
             return result
 
@@ -202,6 +238,16 @@ class TgstatChannelImporter:
                 await asyncio.sleep(TGSTAT_VALIDATE_DELAY_SECONDS)
 
         result.channels_total_after = await self._count_channels()
+        logger.info(
+            "TGStat import finished with Telegram validation: before=%s after=%s "
+            "added=%s existing=%s skipped=%s target=%s",
+            result.channels_total_before,
+            result.channels_total_after,
+            result.channels_added,
+            result.channels_existing,
+            result.channels_skipped,
+            result.target_total,
+        )
         await self._log_result(result)
         return result
 
@@ -231,19 +277,24 @@ class TgstatChannelImporter:
 
     def _build_sources(self) -> list[TgstatSource]:
         sources: list[TgstatSource] = []
-        paths = [f"{TGSTAT_CHANNEL_RATINGS_PATH}/public"]
-        paths.extend(
-            f"{TGSTAT_CHANNEL_RATINGS_PATH}/{category}/public"
-            for category in self.categories
-        )
-
-        for path in paths:
+        for path in self._build_rating_paths():
             for sort in self.sorts:
                 url = self._source_url(path, sort)
                 label = f"{path}?sort={sort}"
                 sources.append(TgstatSource(url, label))
 
+        for category in self.categories:
+            path = f"/{category}"
+            sources.append(TgstatSource(urljoin(TGSTAT_BASE_URL, path), path))
+
+        logger.info("TGStat sources prepared: %s", len(sources))
         return sources
+
+    def _build_rating_paths(self) -> list[str]:
+        paths = [TGSTAT_CHANNEL_RATINGS_PATH, f"{TGSTAT_CHANNEL_RATINGS_PATH}/public"]
+        for category in self.categories:
+            paths.append(f"{TGSTAT_CHANNEL_RATINGS_PATH}/{category}")
+        return paths
 
     def _source_url(self, path: str, sort: str) -> str:
         return urljoin(TGSTAT_BASE_URL, f"{path}?{urlencode({'sort': sort})}")
@@ -267,7 +318,7 @@ class TgstatChannelImporter:
         url = (
             source.url
             if page == 1
-            else f"{source.url}&{urlencode({'page': page})}"
+            else add_query_params(source.url, {"page": str(page)})
         )
         try:
             html = await asyncio.to_thread(fetch_text, url)
@@ -275,12 +326,20 @@ class TgstatChannelImporter:
             message = f"TGStat {source.label} page {page}: {error}"
             logger.warning(message)
             result.errors.append(message)
+            result.pages_failed += 1
             return []
 
         parser = TgstatChannelHtmlParser()
         parser.feed(html)
         result.pages_checked += 1
-        return list(parser.candidates.values())
+        candidates = list(parser.candidates.values())
+        logger.info(
+            "TGStat page parsed: source=%s page=%s candidates=%s",
+            source.label,
+            page,
+            len(candidates),
+        )
+        return candidates
 
     async def _count_channels(self) -> int:
         async with async_session_factory() as session:
@@ -360,10 +419,32 @@ class TgstatChannelImporter:
                 current_total += 1
                 result.channels_added += 1
                 result.added_usernames.append(channel.username)
+                if result.channels_added % TGSTAT_DB_INSERT_LOG_STEP == 0:
+                    logger.info(
+                        "TGStat DB insert progress: added=%s existing=%s total=%s target=%s",
+                        result.channels_added,
+                        result.channels_existing,
+                        current_total,
+                        self.target_total,
+                    )
 
             await session.commit()
 
         result.channels_total_after = current_total
+        if result.channels_total_after < self.target_total:
+            result.errors.append(
+                "Не хватило новых TGStat username, "
+                "чтобы добрать базу до цели."
+            )
+            logger.warning(
+                "TGStat import stopped before target: after=%s target=%s "
+                "candidates=%s added=%s existing=%s",
+                result.channels_total_after,
+                self.target_total,
+                len(candidates),
+                result.channels_added,
+                result.channels_existing,
+            )
 
     async def _log_result(self, result: TgstatImportResult) -> None:
         async with async_session_factory() as session:
@@ -381,6 +462,7 @@ class TgstatChannelImporter:
                     "channels_total_after": result.channels_total_after,
                     "sources_checked": result.sources_checked,
                     "pages_checked": result.pages_checked,
+                    "pages_failed": result.pages_failed,
                     "candidates_found": result.candidates_found,
                     "errors": result.errors[:20],
                 },
@@ -402,6 +484,13 @@ def fetch_text(url: str) -> str:
     with urlopen(request, timeout=TGSTAT_PAGE_TIMEOUT_SECONDS) as response:
         charset = response.headers.get_content_charset() or "utf-8"
         return response.read().decode(charset, errors="replace")
+
+
+def add_query_params(url: str, params: dict[str, str]) -> str:
+    parsed = urlparse(url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query.update(params)
+    return urlunparse(parsed._replace(query=urlencode(query)))
 
 
 def normalize_username(value: str) -> str | None:

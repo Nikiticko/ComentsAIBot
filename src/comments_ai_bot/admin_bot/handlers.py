@@ -481,7 +481,7 @@ class TgstatImportReporter:
         )
 
         try:
-            result = await TgstatChannelImporter().import_public_channels()
+            result = await TgstatChannelImporter(target_total=10_000).import_public_channels()
         except Exception as error:
             logger.exception("TGStat channel import failed")
             async with async_session_factory() as session:
@@ -504,7 +504,8 @@ class TgstatImportReporter:
             f"Было каналов: {result.channels_total_before}\n"
             f"Стало каналов: {result.channels_total_after}\n"
             f"Источников: {result.sources_checked}\n"
-            f"Страниц: {result.pages_checked}\n"
+            f"Страниц: {result.pages_checked}, "
+            f"ошибок страниц: {result.pages_failed}\n"
             f"Найдено username: {result.candidates_found}\n"
             f"Добавлено: {result.channels_added}\n"
             f"Уже было: {result.channels_existing}\n"
