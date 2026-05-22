@@ -9,6 +9,7 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from comments_ai_bot.admin_bot.keyboards import (
     ADD_CHANNEL,
+    AUTO_ADD_CHANNELS,
     CANCEL,
     CHANNEL_LIST,
     LOGS,
@@ -29,6 +30,7 @@ from comments_ai_bot.db.repositories import (
     TelegramAccountRepository,
 )
 from comments_ai_bot.db.session import async_session_factory
+from comments_ai_bot.discovery.tgstat import TgstatChannelImporter
 from comments_ai_bot.monitoring.manual_scan import ManualPostScanner
 from comments_ai_bot.publishing.test_comments import TestCommentSender
 from comments_ai_bot.telegram_client.auth import remove_session_files, start_qr_login, wait_qr_login
@@ -124,6 +126,11 @@ async def list_channels_from_menu(message: Message) -> None:
 async def list_channels(callback: CallbackQuery) -> None:
     await send_channel_list(callback.message)
     await callback.answer()
+
+
+@router.message(F.text == AUTO_ADD_CHANNELS)
+async def auto_add_channels_from_tgstat(message: Message) -> None:
+    await TgstatImportReporter(message).send()
 
 
 async def send_channel_list(message: Message) -> None:
@@ -460,6 +467,58 @@ class TestCommentsReporter:
         lines = [f"sent: {item.post_url}" for item in sent_items[:TEST_SENT_LIMIT]]
         if len(sent_items) > TEST_SENT_LIMIT:
             lines.append(f"...ещё {len(sent_items) - TEST_SENT_LIMIT}")
+
+        for chunk in split_messages(lines):
+            await self.message.answer(chunk)
+
+
+class TgstatImportReporter:
+    def __init__(self, message: Message) -> None:
+        self.message = message
+
+    async def send(self) -> None:
+        await self.message.answer(
+            "Ищу открытые каналы в TGStat "
+            "и проверяю доступ через Telegram."
+        )
+
+        try:
+            result = await TgstatChannelImporter().import_public_channels()
+        except Exception as error:
+            logger.exception("TGStat channel import failed")
+            async with async_session_factory() as session:
+                await LogRepository(session).error(
+                    "tgstat_channels_import_failed",
+                    str(error),
+                    payload={"exception_type": type(error).__name__},
+                )
+                await session.commit()
+            await self.message.answer(
+                "Импорт TGStat не выполнен. "
+                "Подробности записаны в logs/app.log.",
+                reply_markup=main_menu(),
+            )
+            return
+
+        summary = (
+            "Импорт TGStat завершён.\n"
+            f"Страниц: {result.pages_checked}\n"
+            f"Найдено username: {result.candidates_found}\n"
+            f"Добавлено: {result.channels_added}\n"
+            f"Уже было: {result.channels_existing}\n"
+            f"Пропущено: {result.channels_skipped}"
+        )
+        await self.message.answer(summary, reply_markup=main_menu())
+
+        if result.errors:
+            await self.message.answer("Ошибки: " + "; ".join(result.errors[:5]))
+
+        if not result.added_usernames:
+            return
+
+        lines = result.added_usernames[:READY_POSTS_LIMIT]
+        if len(result.added_usernames) > READY_POSTS_LIMIT:
+            lines.append(f"...ещё {len(result.added_usernames) - READY_POSTS_LIMIT}")
 
         for chunk in split_messages(lines):
             await self.message.answer(chunk)

@@ -62,6 +62,14 @@ class Settings:
     def log_level(self) -> str:
         return _getenv("LOG_LEVEL", "INFO") or "INFO"
 
+    @property
+    def tgstat_import_max_pages(self) -> int:
+        return int(_getenv("TGSTAT_IMPORT_MAX_PAGES", "5") or "5")
+
+    @property
+    def tgstat_import_max_channels(self) -> int:
+        return int(_getenv("TGSTAT_IMPORT_MAX_CHANNELS", "200") or "200")
+
 
 @lru_cache
 def get_settings() -> Settings:
