@@ -4,7 +4,7 @@ from html.parser import HTMLParser
 import logging
 import re
 from urllib.error import URLError
-from urllib.parse import unquote, urljoin, urlparse
+from urllib.parse import urlencode, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from telethon.errors import RPCError
@@ -20,12 +20,30 @@ from comments_ai_bot.telegram_client.client import TelegramAccountClient
 
 logger = logging.getLogger(__name__)
 
-TGSTAT_PUBLIC_CHANNELS_URL = "https://uk.tgstat.com/ratings/channels/public"
+TGSTAT_BASE_URL = "https://uk.tgstat.com"
+TGSTAT_CHANNEL_RATINGS_PATH = "/ratings/channels"
 TGSTAT_PAGE_TIMEOUT_SECONDS = 15
 TGSTAT_REQUEST_DELAY_SECONDS = 1
 TGSTAT_VALIDATE_DELAY_SECONDS = 1
 USERNAME_RE = re.compile(r"^@[A-Za-z0-9_]{5,32}$")
 USERNAME_IN_TEXT_RE = re.compile(r"(?<![A-Za-z0-9_])@([A-Za-z0-9_]{5,32})(?![A-Za-z0-9_])")
+TGSTAT_SERVICE_USERNAMES = {
+    "@SearcheeBot",
+    "@TGAlertsBot",
+    "@TGStat",
+    "@TGStatAPI",
+    "@TGStatSupportBot",
+    "@TGStat_Bot",
+    "@TGStat_Chat",
+    "@TGStatChatBot",
+    "@tg_analytics_bot",
+}
+
+
+@dataclass(frozen=True)
+class TgstatSource:
+    url: str
+    label: str
 
 
 @dataclass(frozen=True)
@@ -36,6 +54,7 @@ class TgstatChannelCandidate:
 
 @dataclass
 class TgstatImportResult:
+    sources_checked: int = 0
     pages_checked: int = 0
     candidates_found: int = 0
     channels_added: int = 0
@@ -112,9 +131,13 @@ class TgstatChannelImporter:
         *,
         max_pages: int | None = None,
         max_channels: int | None = None,
+        categories: list[str] | None = None,
+        sorts: list[str] | None = None,
     ) -> None:
         self.max_pages = max_pages or settings.tgstat_import_max_pages
         self.max_channels = max_channels or settings.tgstat_import_max_channels
+        self.categories = categories or settings.tgstat_import_categories
+        self.sorts = sorts or settings.tgstat_import_sorts
 
     async def import_public_channels(self) -> TgstatImportResult:
         result = TgstatImportResult()
@@ -151,35 +174,60 @@ class TgstatChannelImporter:
 
     async def _load_candidates(self, result: TgstatImportResult) -> list[TgstatChannelCandidate]:
         candidates: dict[str, TgstatChannelCandidate] = {}
-        for page in range(1, self.max_pages + 1):
-            page_candidates = await self._load_page(page, result)
-            if not page_candidates:
+        for source in self._build_sources():
+            result.sources_checked += 1
+            for page in range(1, self.max_pages + 1):
+                page_candidates = await self._load_page(source, page, result)
+                if not page_candidates:
+                    break
+
+                result.pages_checked += 1
+                for candidate in page_candidates:
+                    candidates.setdefault(candidate.username, candidate)
+                    if len(candidates) >= self.max_channels:
+                        return list(candidates.values())
+
+                await asyncio.sleep(TGSTAT_REQUEST_DELAY_SECONDS)
+
+            if len(candidates) >= self.max_channels:
                 break
-
-            result.pages_checked += 1
-            for candidate in page_candidates:
-                candidates.setdefault(candidate.username, candidate)
-                if len(candidates) >= self.max_channels:
-                    return list(candidates.values())
-
-            await asyncio.sleep(TGSTAT_REQUEST_DELAY_SECONDS)
 
         return list(candidates.values())
 
+    def _build_sources(self) -> list[TgstatSource]:
+        sources: list[TgstatSource] = []
+        paths = [f"{TGSTAT_CHANNEL_RATINGS_PATH}/public"]
+        paths.extend(
+            f"{TGSTAT_CHANNEL_RATINGS_PATH}/{category}/public"
+            for category in self.categories
+        )
+
+        for path in paths:
+            for sort in self.sorts:
+                url = self._source_url(path, sort)
+                label = f"{path}?sort={sort}"
+                sources.append(TgstatSource(url, label))
+
+        return sources
+
+    def _source_url(self, path: str, sort: str) -> str:
+        return urljoin(TGSTAT_BASE_URL, f"{path}?{urlencode({'sort': sort})}")
+
     async def _load_page(
         self,
+        source: TgstatSource,
         page: int,
         result: TgstatImportResult,
     ) -> list[TgstatChannelCandidate]:
         url = (
-            TGSTAT_PUBLIC_CHANNELS_URL
+            source.url
             if page == 1
-            else f"{TGSTAT_PUBLIC_CHANNELS_URL}?page={page}"
+            else f"{source.url}&{urlencode({'page': page})}"
         )
         try:
             html = await asyncio.to_thread(fetch_text, url)
         except (OSError, URLError) as error:
-            message = f"TGStat page {page}: {error}"
+            message = f"TGStat {source.label} page {page}: {error}"
             logger.warning(message)
             result.errors.append(message)
             return []
@@ -242,6 +290,7 @@ class TgstatChannelImporter:
                     f"пропущено {result.channels_skipped}"
                 ),
                 payload={
+                    "sources_checked": result.sources_checked,
                     "pages_checked": result.pages_checked,
                     "candidates_found": result.candidates_found,
                     "errors": result.errors[:20],
@@ -252,7 +301,7 @@ class TgstatChannelImporter:
 
 def fetch_text(url: str) -> str:
     request = Request(
-        urljoin(TGSTAT_PUBLIC_CHANNELS_URL, url),
+        urljoin(TGSTAT_BASE_URL, url),
         headers={
             "User-Agent": (
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -276,5 +325,7 @@ def normalize_username(value: str) -> str | None:
         username = f"@{username}"
 
     if not USERNAME_RE.fullmatch(username):
+        return None
+    if username in TGSTAT_SERVICE_USERNAMES:
         return None
     return username

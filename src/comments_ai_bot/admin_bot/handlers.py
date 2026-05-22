@@ -502,6 +502,7 @@ class TgstatImportReporter:
 
         summary = (
             "Импорт TGStat завершён.\n"
+            f"Источников: {result.sources_checked}\n"
             f"Страниц: {result.pages_checked}\n"
             f"Найдено username: {result.candidates_found}\n"
             f"Добавлено: {result.channels_added}\n"

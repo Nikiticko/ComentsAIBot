@@ -68,7 +68,24 @@ class Settings:
 
     @property
     def tgstat_import_max_channels(self) -> int:
-        return int(_getenv("TGSTAT_IMPORT_MAX_CHANNELS", "200") or "200")
+        return int(_getenv("TGSTAT_IMPORT_MAX_CHANNELS", "500") or "500")
+
+    @property
+    def tgstat_import_categories(self) -> list[str]:
+        value = _getenv(
+            "TGSTAT_IMPORT_CATEGORIES",
+            (
+                "news,blogs,humor,tech,business,crypto,travel,marketing,"
+                "psychology,education,sport,fashion,health,apps,video,"
+                "music,games,food,telegram,sales,transport,other"
+            ),
+        )
+        return [item.strip() for item in (value or "").split(",") if item.strip()]
+
+    @property
+    def tgstat_import_sorts(self) -> list[str]:
+        value = _getenv("TGSTAT_IMPORT_SORTS", "members,reach,ci,members_t,members_y")
+        return [item.strip() for item in (value or "").split(",") if item.strip()]
 
 
 @lru_cache

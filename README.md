@@ -57,10 +57,11 @@ python scripts/auth_telegram.py
 
 Кнопка `Посты 20к+` в админке парсит активные каналы из базы только за последние 24 часа.
 
-Кнопка `Авто каналы TGStat` берёт публичные каналы из рейтинга TGStat, проверяет через
-Telethon, что канал читается без вступления, и добавляет подходящие username в базу.
-Лимиты импорта можно менять переменными `TGSTAT_IMPORT_MAX_PAGES` и
-`TGSTAT_IMPORT_MAX_CHANNELS`.
+Кнопка `Авто каналы TGStat` берёт публичные каналы из рейтингов TGStat по нескольким
+категориям и сортировкам, проверяет через Telethon, что канал читается без вступления,
+и добавляет подходящие username в базу. Лимиты импорта можно менять переменными
+`TGSTAT_IMPORT_MAX_PAGES`, `TGSTAT_IMPORT_MAX_CHANNELS`, `TGSTAT_IMPORT_CATEGORIES`
+и `TGSTAT_IMPORT_SORTS`.
 
 ## Dev-запуск
 
