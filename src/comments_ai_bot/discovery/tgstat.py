@@ -54,6 +54,9 @@ class TgstatChannelCandidate:
 
 @dataclass
 class TgstatImportResult:
+    target_total: int = 0
+    channels_total_before: int = 0
+    channels_total_after: int = 0
     sources_checked: int = 0
     pages_checked: int = 0
     candidates_found: int = 0
@@ -131,16 +134,34 @@ class TgstatChannelImporter:
         *,
         max_pages: int | None = None,
         max_channels: int | None = None,
+        target_total: int | None = None,
+        concurrency: int | None = None,
+        validate_channels: bool | None = None,
         categories: list[str] | None = None,
         sorts: list[str] | None = None,
     ) -> None:
         self.max_pages = max_pages or settings.tgstat_import_max_pages
         self.max_channels = max_channels or settings.tgstat_import_max_channels
+        self.target_total = target_total or settings.tgstat_import_target_channels
+        self.concurrency = concurrency or settings.tgstat_import_concurrency
+        self.validate_channels = (
+            settings.tgstat_validate_channels
+            if validate_channels is None
+            else validate_channels
+        )
         self.categories = categories or settings.tgstat_import_categories
         self.sorts = sorts or settings.tgstat_import_sorts
 
     async def import_public_channels(self) -> TgstatImportResult:
         result = TgstatImportResult()
+        result.target_total = self.target_total
+        result.channels_total_before = await self._count_channels()
+        result.channels_total_after = result.channels_total_before
+
+        if result.channels_total_before >= self.target_total:
+            await self._log_result(result)
+            return result
+
         candidates = await self._load_candidates(result)
         result.candidates_found = len(candidates)
 
@@ -148,6 +169,11 @@ class TgstatChannelImporter:
             result.errors.append(
                 "TGStat не вернул публичные username каналов."
             )
+            await self._log_result(result)
+            return result
+
+        if not self.validate_channels:
+            await self._add_candidates_until_target(candidates, result)
             await self._log_result(result)
             return result
 
@@ -162,6 +188,9 @@ class TgstatChannelImporter:
 
         async with TelegramAccountClient(session_names[0]) as telegram:
             for candidate in candidates:
+                if result.channels_total_before + result.channels_added >= self.target_total:
+                    break
+
                 readable = await self._is_channel_readable(telegram, candidate, result)
                 if readable is None:
                     break
@@ -172,28 +201,31 @@ class TgstatChannelImporter:
 
                 await asyncio.sleep(TGSTAT_VALIDATE_DELAY_SECONDS)
 
+        result.channels_total_after = await self._count_channels()
         await self._log_result(result)
         return result
 
     async def _load_candidates(self, result: TgstatImportResult) -> list[TgstatChannelCandidate]:
         candidates: dict[str, TgstatChannelCandidate] = {}
-        for source in self._build_sources():
-            result.sources_checked += 1
-            for page in range(1, self.max_pages + 1):
-                page_candidates = await self._load_page(source, page, result)
-                if not page_candidates:
-                    break
+        sources = self._build_sources()
+        result.sources_checked = len(sources)
+        semaphore = asyncio.Semaphore(self.concurrency)
+        tasks = [
+            asyncio.create_task(self._load_page_limited(source, page, result, semaphore))
+            for source in sources
+            for page in range(1, self.max_pages + 1)
+        ]
 
-                result.pages_checked += 1
-                for candidate in page_candidates:
-                    candidates.setdefault(candidate.username, candidate)
-                    if len(candidates) >= self.max_channels:
-                        return list(candidates.values())
-
-                await asyncio.sleep(TGSTAT_REQUEST_DELAY_SECONDS)
-
-            if len(candidates) >= self.max_channels:
-                break
+        for task in asyncio.as_completed(tasks):
+            page_candidates = await task
+            for candidate in page_candidates:
+                candidates.setdefault(candidate.username, candidate)
+                if len(candidates) >= self.max_channels:
+                    for pending_task in tasks:
+                        if not pending_task.done():
+                            pending_task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    return list(candidates.values())
 
         return list(candidates.values())
 
@@ -216,6 +248,16 @@ class TgstatChannelImporter:
     def _source_url(self, path: str, sort: str) -> str:
         return urljoin(TGSTAT_BASE_URL, f"{path}?{urlencode({'sort': sort})}")
 
+    async def _load_page_limited(
+        self,
+        source: TgstatSource,
+        page: int,
+        result: TgstatImportResult,
+        semaphore: asyncio.Semaphore,
+    ) -> list[TgstatChannelCandidate]:
+        async with semaphore:
+            return await self._load_page(source, page, result)
+
     async def _load_page(
         self,
         source: TgstatSource,
@@ -237,7 +279,12 @@ class TgstatChannelImporter:
 
         parser = TgstatChannelHtmlParser()
         parser.feed(html)
+        result.pages_checked += 1
         return list(parser.candidates.values())
+
+    async def _count_channels(self) -> int:
+        async with async_session_factory() as session:
+            return await ChannelRepository(session).count()
 
     async def _get_telegram_sessions(self) -> list[str | None]:
         async with async_session_factory() as session:
@@ -292,6 +339,32 @@ class TgstatChannelImporter:
         result.channels_added += 1
         result.added_usernames.append(channel.username)
 
+    async def _add_candidates_until_target(
+        self,
+        candidates: list[TgstatChannelCandidate],
+        result: TgstatImportResult,
+    ) -> None:
+        current_total = result.channels_total_before
+        async with async_session_factory() as session:
+            repo = ChannelRepository(session)
+            for candidate in candidates:
+                if current_total >= self.target_total:
+                    break
+
+                existing = await repo.get_by_username(candidate.username)
+                channel = await repo.add(candidate.username, candidate.title)
+                if existing:
+                    result.channels_existing += 1
+                    continue
+
+                current_total += 1
+                result.channels_added += 1
+                result.added_usernames.append(channel.username)
+
+            await session.commit()
+
+        result.channels_total_after = current_total
+
     async def _log_result(self, result: TgstatImportResult) -> None:
         async with async_session_factory() as session:
             await LogRepository(session).info(
@@ -303,6 +376,9 @@ class TgstatChannelImporter:
                     f"пропущено {result.channels_skipped}"
                 ),
                 payload={
+                    "target_total": result.target_total,
+                    "channels_total_before": result.channels_total_before,
+                    "channels_total_after": result.channels_total_after,
                     "sources_checked": result.sources_checked,
                     "pages_checked": result.pages_checked,
                     "candidates_found": result.candidates_found,

@@ -477,8 +477,7 @@ class TgstatImportReporter:
 
     async def send(self) -> None:
         await self.message.answer(
-            "Ищу открытые каналы в TGStat "
-            "и проверяю доступ через Telegram."
+            "Добираю базу каналов из TGStat до целевого объёма."
         )
 
         try:
@@ -501,6 +500,9 @@ class TgstatImportReporter:
 
         summary = (
             "Импорт TGStat завершён.\n"
+            f"Цель в базе: {result.target_total}\n"
+            f"Было каналов: {result.channels_total_before}\n"
+            f"Стало каналов: {result.channels_total_after}\n"
             f"Источников: {result.sources_checked}\n"
             f"Страниц: {result.pages_checked}\n"
             f"Найдено username: {result.candidates_found}\n"

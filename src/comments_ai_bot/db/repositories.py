@@ -14,6 +14,10 @@ class ChannelRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def count(self) -> int:
+        result = await self.session.execute(select(func.count()).select_from(Channel))
+        return int(result.scalar_one())
+
     async def add(self, username: str, title: str | None = None) -> Channel:
         existing = await self.get_by_username(username)
         if existing:

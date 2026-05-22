@@ -25,6 +25,13 @@ def _getenv_int_list(name: str) -> list[int]:
     return [int(item.strip()) for item in value.split(",") if item.strip()]
 
 
+def _getenv_bool(name: str, default: bool = False) -> bool:
+    value = _getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class Settings:
     @property
     def admin_bot_token(self) -> str:
@@ -68,7 +75,19 @@ class Settings:
 
     @property
     def tgstat_import_max_channels(self) -> int:
-        return int(_getenv("TGSTAT_IMPORT_MAX_CHANNELS", "500") or "500")
+        return int(_getenv("TGSTAT_IMPORT_MAX_CHANNELS", "2500") or "2500")
+
+    @property
+    def tgstat_import_target_channels(self) -> int:
+        return int(_getenv("TGSTAT_IMPORT_TARGET_CHANNELS", "1000") or "1000")
+
+    @property
+    def tgstat_import_concurrency(self) -> int:
+        return int(_getenv("TGSTAT_IMPORT_CONCURRENCY", "8") or "8")
+
+    @property
+    def tgstat_validate_channels(self) -> bool:
+        return _getenv_bool("TGSTAT_VALIDATE_CHANNELS", False)
 
     @property
     def tgstat_import_categories(self) -> list[str]:
