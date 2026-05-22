@@ -163,6 +163,38 @@ class TelegramAccountRepository:
         await self.session.flush()
         return account
 
+    async def upsert_authorized(
+        self,
+        session_name: str,
+        *,
+        telegram_user_id: int,
+        username: str | None,
+        first_name: str | None,
+        phone: str | None,
+    ) -> TelegramAccount:
+        account = await self.get_by_session_name(session_name)
+        if account is None and telegram_user_id:
+            account = await self.get_by_telegram_user_id(telegram_user_id)
+
+        if account is None:
+            if await self.count() >= MAX_TELEGRAM_ACCOUNTS:
+                raise RuntimeError(
+                    f"Нельзя добавить больше {MAX_TELEGRAM_ACCOUNTS} Telegram-аккаунтов."
+                )
+            account = TelegramAccount(session_name=session_name)
+            self.session.add(account)
+
+        account.session_name = session_name
+        account.telegram_user_id = telegram_user_id
+        account.username = username
+        account.first_name = first_name
+        account.phone = phone
+        account.is_active = True
+        account.status = "active"
+        account.last_error = None
+        await self.session.flush()
+        return account
+
     async def mark_error(self, account_id: int, error: str) -> TelegramAccount | None:
         account = await self.get(account_id)
         if account is None:
@@ -176,6 +208,23 @@ class TelegramAccountRepository:
 
     async def get(self, account_id: int) -> TelegramAccount | None:
         return await self.session.get(TelegramAccount, account_id)
+
+    async def get_by_session_name(self, session_name: str) -> TelegramAccount | None:
+        result = await self.session.execute(
+            select(TelegramAccount).where(TelegramAccount.session_name == session_name)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_telegram_user_id(
+        self,
+        telegram_user_id: int,
+    ) -> TelegramAccount | None:
+        result = await self.session.execute(
+            select(TelegramAccount).where(
+                TelegramAccount.telegram_user_id == telegram_user_id
+            )
+        )
+        return result.scalar_one_or_none()
 
     async def list_all(self) -> list[TelegramAccount]:
         result = await self.session.execute(select(TelegramAccount).order_by(TelegramAccount.id.desc()))

@@ -24,6 +24,7 @@ from comments_ai_bot.admin_bot.keyboards import (
     telegram_accounts_menu,
 )
 from comments_ai_bot.admin_bot.states import ChannelStates
+from comments_ai_bot.core.config import settings
 from comments_ai_bot.db.repositories import (
     ChannelRepository,
     LogRepository,
@@ -33,7 +34,14 @@ from comments_ai_bot.db.session import async_session_factory
 from comments_ai_bot.discovery.tgstat import TgstatChannelImporter
 from comments_ai_bot.monitoring.manual_scan import ManualPostScanner
 from comments_ai_bot.publishing.test_comments import TestCommentSender
-from comments_ai_bot.telegram_client.auth import remove_session_files, start_qr_login, wait_qr_login
+from comments_ai_bot.telegram_client.auth import (
+    copy_legacy_session_files,
+    create_legacy_client,
+    legacy_session_path,
+    remove_session_files,
+    start_qr_login,
+    wait_qr_login,
+)
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -243,13 +251,25 @@ async def send_telegram_accounts(message: Message) -> None:
     async with async_session_factory() as session:
         accounts = await TelegramAccountRepository(session).list_all()
 
+    legacy_info = await get_legacy_account_info(accounts)
+    total_accounts = len(accounts) + (1 if legacy_info else 0)
     await message.answer(
-        f"Telegram-аккаунты: {len(accounts)}/100",
+        f"Telegram-аккаунты: {total_accounts}/100",
         reply_markup=telegram_accounts_menu(),
     )
-    if not accounts:
+    if not accounts and legacy_info is None:
         await message.answer("Аккаунты ещё не добавлены.")
         return
+
+    if legacy_info is not None:
+        await message.answer(
+            (
+                f"Legacy: {legacy_info['title']}\n"
+                "Статус: active, активен\n"
+                f"Сессия: {legacy_info['session_name']}\n"
+                "Источник: data/*.session"
+            )
+        )
 
     for account in accounts:
         active = "активен" if account.is_active else "выключен"
@@ -262,6 +282,29 @@ async def send_telegram_accounts(message: Message) -> None:
         if account.last_error:
             text = f"{text}\nОшибка: {account.last_error}"
         await message.answer(text, reply_markup=telegram_account_actions(account.id, account.is_active))
+
+
+async def get_legacy_account_info(existing_accounts) -> dict | None:
+    session_name = settings.telegram_session_name
+    if not legacy_session_path(session_name).with_suffix(".session").exists():
+        return None
+    if any(account.session_name == session_name for account in existing_accounts):
+        return None
+
+    try:
+        me = await probe_legacy_account(session_name)
+    except Exception as error:
+        logger.warning("Failed to inspect legacy Telegram session: %s", error)
+        return {
+            "session_name": session_name,
+            "title": session_name,
+        }
+
+    return {
+        "session_name": session_name,
+        "title": me["username"] or me["first_name"] or str(me["id"]),
+        **me,
+    }
 
 
 @router.callback_query(F.data == "tg_account:add")
@@ -333,6 +376,64 @@ async def start_authorized_account_probe(session_name: str) -> dict:
         }
     finally:
         await client.disconnect()
+
+
+async def probe_legacy_account(session_name: str) -> dict:
+    client = await create_legacy_client(session_name)
+    try:
+        if not await client.is_user_authorized():
+            raise RuntimeError("legacy-сессия не авторизована")
+
+        me = await client.get_me()
+        if me.bot:
+            raise RuntimeError("legacy-сессия авторизована как бот")
+
+        return {
+            "id": me.id,
+            "username": me.username,
+            "first_name": me.first_name,
+            "phone": me.phone,
+        }
+    finally:
+        await client.disconnect()
+
+
+@router.callback_query(F.data == "tg_account:import_legacy")
+async def import_legacy_telegram_account(callback: CallbackQuery) -> None:
+    session_name = settings.telegram_session_name
+    if not legacy_session_path(session_name).with_suffix(".session").exists():
+        await callback.answer("Legacy-сессия не найдена", show_alert=True)
+        return
+
+    try:
+        me = await probe_legacy_account(session_name)
+    except Exception as error:
+        logger.exception("Failed to import legacy Telegram session")
+        await callback.answer("Legacy-сессия не авторизована", show_alert=True)
+        await callback.message.answer(f"Не удалось подхватить сессию: {error}")
+        return
+
+    copy_legacy_session_files(session_name)
+    async with async_session_factory() as session:
+        repo = TelegramAccountRepository(session)
+        account = await repo.upsert_authorized(
+            session_name,
+            telegram_user_id=me["id"],
+            username=me["username"],
+            first_name=me["first_name"],
+            phone=me["phone"],
+        )
+        await LogRepository(session).info(
+            "telegram_legacy_account_imported",
+            f"Подхвачена Telegram-сессия {me['username'] or me['id']}",
+            "telegram_account",
+            account.id,
+        )
+        await session.commit()
+
+    await callback.message.answer("Текущая Telegram-сессия добавлена в аккаунты.")
+    await send_telegram_accounts(callback.message)
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("tg_account:toggle:"))

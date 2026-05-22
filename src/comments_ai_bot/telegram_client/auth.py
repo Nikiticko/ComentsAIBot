@@ -3,6 +3,7 @@ import logging
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+import shutil
 
 import qrcode
 from telethon import TelegramClient
@@ -25,11 +26,27 @@ def session_path(session_name: str | None = None) -> Path:
     return Path("data") / "accounts" / session_name
 
 
+def legacy_session_path(session_name: str | None = None) -> Path:
+    if session_name is None:
+        session_name = settings.telegram_session_name
+    return Path("data") / session_name
+
+
 def remove_session_files(session_name: str | None = None) -> None:
     base_path = session_path(session_name)
     for path in (base_path.with_suffix(".session"), base_path.with_suffix(".session-journal")):
         if path.exists():
             path.unlink()
+
+
+def copy_legacy_session_files(session_name: str | None = None) -> None:
+    legacy_base_path = legacy_session_path(session_name)
+    account_base_path = session_path(session_name)
+    account_base_path.parent.mkdir(parents=True, exist_ok=True)
+    for suffix in (".session", ".session-journal"):
+        source = legacy_base_path.with_suffix(suffix)
+        if source.exists():
+            shutil.copy2(source, account_base_path.with_suffix(suffix))
 
 
 def build_qr_png(url: str) -> bytes:
@@ -46,6 +63,16 @@ async def create_client(session_name: str | None = None) -> TelegramClient:
     (Path("data") / "accounts").mkdir(parents=True, exist_ok=True)
     client = TelegramClient(
         str(session_path(session_name)),
+        settings.telegram_api_id,
+        settings.telegram_api_hash,
+    )
+    await client.connect()
+    return client
+
+
+async def create_legacy_client(session_name: str | None = None) -> TelegramClient:
+    client = TelegramClient(
+        str(legacy_session_path(session_name)),
         settings.telegram_api_id,
         settings.telegram_api_hash,
     )

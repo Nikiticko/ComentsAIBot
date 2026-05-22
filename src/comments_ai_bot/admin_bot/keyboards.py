@@ -58,6 +58,7 @@ def telegram_accounts_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Добавить аккаунт", callback_data="tg_account:add")],
+            [InlineKeyboardButton(text="Подхватить текущую сессию", callback_data="tg_account:import_legacy")],
         ]
     )
 
