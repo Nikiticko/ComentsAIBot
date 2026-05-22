@@ -147,11 +147,24 @@ class TestCommentSender:
         telegram: TelegramAccountClient,
         result: TestCommentResult,
     ) -> bool:
-        posts = await telegram.fetch_recent_posts(
-            channel.username,
-            limit=POST_SCAN_LIMIT,
-            hours=POST_SCAN_HOURS,
-        )
+        try:
+            posts = await telegram.fetch_recent_posts(
+                channel.username,
+                limit=POST_SCAN_LIMIT,
+                hours=POST_SCAN_HOURS,
+            )
+        except ValueError as error:
+            result.comments_skipped += 1
+            result.items.append(TestCommentItem(channel.username, "skipped", str(error)))
+            await self._write_log(
+                LogLevel.WARNING,
+                "test_comment_channel_skipped",
+                f"Канал {channel.username} пропущен: {error}",
+                "channel",
+                channel.id,
+            )
+            return True
+
         random.shuffle(posts)
         posts = self._filter_mature_posts(posts)
         result.posts_found += len(posts)

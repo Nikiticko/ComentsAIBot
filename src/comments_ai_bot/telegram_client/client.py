@@ -6,6 +6,7 @@ from pathlib import Path
 
 from telethon import TelegramClient, errors
 from telethon.tl.custom.message import Message
+from telethon.tl.types import Channel
 
 from comments_ai_bot.core.config import settings
 
@@ -75,7 +76,7 @@ class TelegramAccountClient:
         limit: int = 100,
         hours: int | None = None,
     ) -> list[TelegramPost]:
-        entity = await self.client.get_entity(channel_username)
+        entity = await self._get_broadcast_channel(channel_username)
         messages: list[Message] = await self.client.get_messages(entity, limit=limit)
 
         min_date = None
@@ -149,13 +150,20 @@ class TelegramAccountClient:
     def _has_comment_thread(self, message: Message) -> bool:
         return bool(message.replies and getattr(message.replies, "comments", False))
 
+    async def _get_broadcast_channel(self, channel_username: str) -> Channel:
+        entity = await self.client.get_entity(channel_username)
+        if isinstance(entity, Channel) and bool(getattr(entity, "broadcast", False)):
+            return entity
+
+        raise ValueError(f"{channel_username} — это чат/группа, а не Telegram-канал")
+
     async def can_comment(
         self,
         channel_username: str,
         post_id: int,
         candidate_post_ids: tuple[int, ...] | None = None,
     ) -> CommentAvailability:
-        entity = await self.client.get_entity(channel_username)
+        entity = await self._get_broadcast_channel(channel_username)
         post_ids = candidate_post_ids or (post_id,)
         last_reason = "Комментарии недоступны"
 
@@ -192,7 +200,7 @@ class TelegramAccountClient:
         text: str,
         candidate_post_ids: tuple[int, ...] | None = None,
     ) -> int:
-        entity = await self.client.get_entity(channel_username)
+        entity = await self._get_broadcast_channel(channel_username)
         post_ids = candidate_post_ids or (post_id,)
         last_error: Exception | None = None
 
