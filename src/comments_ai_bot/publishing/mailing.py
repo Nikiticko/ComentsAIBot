@@ -1,20 +1,25 @@
 import asyncio
 import logging
+import random
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 
 from comments_ai_bot.core.types import LogLevel
+from comments_ai_bot.db.models import Channel, TelegramAccount
 from comments_ai_bot.db.repositories import (
     ChannelRepository,
     CommentRepository,
     LogRepository,
     TelegramAccountRepository,
 )
-from comments_ai_bot.db.models import TelegramAccount
 from comments_ai_bot.db.session import async_session_factory
-from comments_ai_bot.publishing.test_comments import TestCommentSender
+from comments_ai_bot.publishing.test_comments import (
+    AUTOMATION_CHANNEL_ATTEMPT_LIMIT,
+    TestCommentResult,
+    TestCommentSender,
+)
 
 MAILING_INTERVAL_SECONDS = 30
 TELEGRAM_MESSAGE_LIMIT = 3500
@@ -76,34 +81,16 @@ class MailingAutomation:
                     return
 
                 commented_channel_ids = await self._get_today_commented_channel_ids()
-                cycle_sent = 0
-                sent_report_lines: list[str] = []
-
-                for account in accounts:
-                    sender = TestCommentSender(send_delay_range_seconds=(0, 0))
-                    result = await sender.send_one_for_account(
-                        session_name=account.session_name,
-                        account_id=account.id,
-                        excluded_channel_ids=commented_channel_ids,
-                    )
-
-                    sent_items = [item for item in result.items if item.status == "sent"]
-                    if sent_items and result.channel_username:
-                        cycle_sent += 1
-                        account_title = self._account_title(account)
-                        sent_report_lines.extend(
-                            f"{account_title}: {item.post_url}" for item in sent_items
-                        )
-                        channel_id = await self._get_channel_id(result.channel_username)
-                        if channel_id is not None:
-                            commented_channel_ids.add(channel_id)
-
-                    if result.errors:
-                        await self._write_log(
-                            LogLevel.ERROR,
-                            "mailing_account_failed",
-                            f"Аккаунт {result.account}: {'; '.join(result.errors)}",
-                        )
+                candidate_channels = await self._get_candidate_channels(commented_channel_ids)
+                channel_groups = self._distribute_channels(candidate_channels, len(accounts))
+                tasks = [
+                    self._send_for_account(account, channel_groups[index])
+                    for index, account in enumerate(accounts)
+                ]
+                account_results = await asyncio.gather(*tasks, return_exceptions=True)
+                cycle_sent, sent_report_lines = await self._handle_account_results(
+                    account_results
+                )
 
                 if sent_report_lines:
                     await self._send_sent_report(bot, chat_id, sent_report_lines)
@@ -112,7 +99,11 @@ class MailingAutomation:
                     LogLevel.INFO,
                     "mailing_cycle_finished",
                     f"Цикл авторассылки завершён. Отправлено: {cycle_sent}.",
-                    payload={"accounts": len(accounts), "sent": cycle_sent},
+                    payload={
+                        "accounts": len(accounts),
+                        "candidate_channels": len(candidate_channels),
+                        "sent": cycle_sent,
+                    },
                 )
                 await asyncio.sleep(MAILING_INTERVAL_SECONDS)
         except asyncio.CancelledError:
@@ -137,6 +128,80 @@ class MailingAutomation:
         async with async_session_factory() as session:
             return await TelegramAccountRepository(session).list_active()
 
+    async def _get_candidate_channels(self, excluded_channel_ids: set[int]) -> list[Channel]:
+        async with async_session_factory() as session:
+            channels = await ChannelRepository(session).list_active()
+
+        candidates = [channel for channel in channels if channel.id not in excluded_channel_ids]
+        random.shuffle(candidates)
+        return candidates
+
+    def _distribute_channels(
+        self,
+        channels: list[Channel],
+        account_count: int,
+    ) -> list[set[int]]:
+        groups: list[set[int]] = [set() for _ in range(account_count)]
+        if account_count <= 0:
+            return groups
+
+        per_account_limit = AUTOMATION_CHANNEL_ATTEMPT_LIMIT * 3
+        for index, channel in enumerate(channels):
+            group = groups[index % account_count]
+            if len(group) < per_account_limit:
+                group.add(channel.id)
+
+        return groups
+
+    async def _send_for_account(
+        self,
+        account: TelegramAccount,
+        channel_ids: set[int],
+    ) -> tuple[TelegramAccount, TestCommentResult]:
+        sender = TestCommentSender(send_delay_range_seconds=(0, 0))
+        result = await sender.send_one_for_account(
+            session_name=account.session_name,
+            account_id=account.id,
+            candidate_channel_ids=channel_ids,
+            max_channels_attempted=AUTOMATION_CHANNEL_ATTEMPT_LIMIT,
+        )
+        return account, result
+
+    async def _handle_account_results(
+        self,
+        account_results: list[tuple[TelegramAccount, TestCommentResult] | BaseException],
+    ) -> tuple[int, list[str]]:
+        cycle_sent = 0
+        sent_report_lines: list[str] = []
+
+        for item in account_results:
+            if isinstance(item, BaseException):
+                await self._write_log(
+                    LogLevel.ERROR,
+                    "mailing_account_task_failed",
+                    f"Задача аккаунта упала: {item}",
+                    payload={"exception_type": type(item).__name__},
+                )
+                continue
+
+            account, result = item
+            sent_items = [result_item for result_item in result.items if result_item.status == "sent"]
+            if sent_items:
+                cycle_sent += len(sent_items)
+                account_title = self._account_title(account)
+                sent_report_lines.extend(
+                    f"{account_title}: {sent_item.post_url}" for sent_item in sent_items
+                )
+
+            if result.errors:
+                await self._write_log(
+                    LogLevel.ERROR,
+                    "mailing_account_failed",
+                    f"Аккаунт {result.account}: {'; '.join(result.errors)}",
+                )
+
+        return cycle_sent, sent_report_lines
+
     async def _get_today_commented_channel_ids(self) -> set[int]:
         now = datetime.now(LOCAL_TZ)
         start = datetime.combine(now.date(), time.min, LOCAL_TZ).astimezone(timezone.utc)
@@ -149,11 +214,6 @@ class MailingAutomation:
                 created_from=start,
                 created_to=end,
             )
-
-    async def _get_channel_id(self, channel_username: str) -> int | None:
-        async with async_session_factory() as session:
-            channel = await ChannelRepository(session).get_by_username(channel_username)
-            return channel.id if channel is not None else None
 
     def _account_title(self, account: TelegramAccount) -> str:
         return account.username or account.first_name or account.session_name
@@ -201,6 +261,13 @@ class MailingAutomation:
         async with async_session_factory() as session:
             await LogRepository(session).create(level, event, message, payload=payload)
             await session.commit()
+
+        if level == LogLevel.ERROR:
+            logger.error("%s: %s", event, message)
+        elif level == LogLevel.WARNING:
+            logger.warning("%s: %s", event, message)
+        else:
+            logger.info("%s: %s", event, message)
 
 
 mailing_automation = MailingAutomation()

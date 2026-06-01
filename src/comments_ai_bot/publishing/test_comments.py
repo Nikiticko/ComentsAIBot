@@ -37,6 +37,7 @@ SEND_DELAY_RANGE_SECONDS = (30, 60)
 CHANNEL_COOLDOWNS_KEY = "test_comment_channel_cooldowns"
 MIN_POST_AGE_MINUTES = 10
 RECENT_ATTEMPT_HOURS = 24
+AUTOMATION_CHANNEL_ATTEMPT_LIMIT = 20
 CHANNEL_COOLDOWN_HOURS = {
     "deleted_after_send": 24,
     "need_join_discussion": 72,
@@ -154,6 +155,8 @@ class TestCommentSender:
         session_name: str | None,
         account_id: int | None,
         excluded_channel_ids: set[int] | None = None,
+        candidate_channel_ids: set[int] | None = None,
+        max_channels_attempted: int = AUTOMATION_CHANNEL_ATTEMPT_LIMIT,
     ) -> TestCommentResult:
         result = TestCommentResult(account=session_name or settings.telegram_session_name)
         excluded_channel_ids = excluded_channel_ids or set()
@@ -164,15 +167,24 @@ class TestCommentSender:
             result.channels_total = len(channels)
 
         channels = [channel for channel in channels if channel.id not in excluded_channel_ids]
+        if candidate_channel_ids is not None:
+            channels = [channel for channel in channels if channel.id in candidate_channel_ids]
         if not channels:
             result.stopped_reason = "Нет каналов без успешного комментария за сегодня."
             return result
 
         random.shuffle(channels)
+        attempted_channels = 0
 
         try:
             async with TelegramAccountClient(session_name) as telegram:
                 for channel in channels:
+                    if attempted_channels >= max_channels_attempted:
+                        result.stopped_reason = (
+                            f"Достигнут лимит каналов за цикл: {max_channels_attempted}."
+                        )
+                        break
+
                     cooldown_reason = self._get_active_cooldown_reason(
                         cooldowns,
                         channel.username,
@@ -185,14 +197,14 @@ class TestCommentSender:
                         continue
 
                     sent_before = result.comments_sent
-                    failed_before = result.comments_failed
                     result.channel_username = channel.username
+                    attempted_channels += 1
                     should_continue = await self._send_one_to_channel(channel, telegram, result)
                     result.channels_processed += 1
 
                     if not should_continue:
                         break
-                    if result.comments_sent > sent_before or result.comments_failed > failed_before:
+                    if result.comments_sent > sent_before:
                         break
 
             if account_id is not None and result.channels_processed:
