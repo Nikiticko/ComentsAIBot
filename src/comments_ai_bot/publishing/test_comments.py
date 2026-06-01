@@ -78,6 +78,13 @@ class TestCommentResult:
 
 
 class TestCommentSender:
+    def __init__(
+        self,
+        *,
+        send_delay_range_seconds: tuple[int, int] = SEND_DELAY_RANGE_SECONDS,
+    ) -> None:
+        self.send_delay_range_seconds = send_delay_range_seconds
+
     async def send_one_per_channel(self) -> TestCommentResult:
         result = TestCommentResult()
 
@@ -137,6 +144,68 @@ class TestCommentSender:
                 LogLevel.ERROR,
                 "test_comments_failed",
                 message,
+            )
+
+        return result
+
+    async def send_one_for_account(
+        self,
+        *,
+        session_name: str | None,
+        account_id: int | None,
+        excluded_channel_ids: set[int] | None = None,
+    ) -> TestCommentResult:
+        result = TestCommentResult(account=session_name or settings.telegram_session_name)
+        excluded_channel_ids = excluded_channel_ids or set()
+
+        async with async_session_factory() as session:
+            channels = await ChannelRepository(session).list_active()
+            cooldowns = await SettingRepository(session).get_value(CHANNEL_COOLDOWNS_KEY)
+            result.channels_total = len(channels)
+
+        channels = [channel for channel in channels if channel.id not in excluded_channel_ids]
+        if not channels:
+            result.stopped_reason = "Нет каналов без успешного комментария за сегодня."
+            return result
+
+        random.shuffle(channels)
+
+        try:
+            async with TelegramAccountClient(session_name) as telegram:
+                for channel in channels:
+                    cooldown_reason = self._get_active_cooldown_reason(
+                        cooldowns,
+                        channel.username,
+                    )
+                    if cooldown_reason:
+                        result.comments_skipped += 1
+                        result.items.append(
+                            TestCommentItem(channel.username, "cooldown", cooldown_reason)
+                        )
+                        continue
+
+                    sent_before = result.comments_sent
+                    failed_before = result.comments_failed
+                    result.channel_username = channel.username
+                    should_continue = await self._send_one_to_channel(channel, telegram, result)
+                    result.channels_processed += 1
+
+                    if not should_continue:
+                        break
+                    if result.comments_sent > sent_before or result.comments_failed > failed_before:
+                        break
+
+            if account_id is not None and result.channels_processed:
+                async with async_session_factory() as session:
+                    await TelegramAccountRepository(session).mark_used(account_id)
+                    await session.commit()
+        except (RPCError, ValueError, RuntimeError) as error:
+            logger.exception("Automated comment sending failed")
+            result.errors.append(str(error))
+            await self._write_log(
+                LogLevel.ERROR,
+                "automated_comments_failed",
+                f"Авторассылка не выполнена для {result.account}: {error}",
             )
 
         return result
@@ -310,7 +379,9 @@ class TestCommentSender:
         return f"https://t.me/{channel_username.removeprefix('@')}/{post_id}"
 
     async def _sleep_before_send(self) -> None:
-        delay = random.randint(*SEND_DELAY_RANGE_SECONDS)
+        delay = random.randint(*self.send_delay_range_seconds)
+        if delay <= 0:
+            return
         logger.info("Waiting %s seconds before test comment", delay)
         await asyncio.sleep(delay)
 

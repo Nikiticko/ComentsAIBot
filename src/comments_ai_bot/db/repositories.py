@@ -1,10 +1,10 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from comments_ai_bot.core.types import LogLevel
+from comments_ai_bot.core.types import CommentStatus, LogLevel
 from comments_ai_bot.db.models import Channel, Comment, Log, Post, Setting, TelegramAccount
 
 MAX_TELEGRAM_ACCOUNTS = 100
@@ -364,6 +364,23 @@ class CommentRepository:
             select(Post.telegram_post_id)
             .join(Comment, Comment.post_id == Post.id)
             .where(Post.channel_id == channel_id, Comment.created_at >= since)
+        )
+        return set(result.scalars().all())
+
+    async def list_channel_ids_with_published_comments(
+        self,
+        *,
+        created_from: datetime,
+        created_to: datetime,
+    ) -> set[int]:
+        result = await self.session.execute(
+            select(distinct(Post.channel_id))
+            .join(Comment, Comment.post_id == Post.id)
+            .where(
+                Comment.status == CommentStatus.PUBLISHED.value,
+                Comment.created_at >= created_from,
+                Comment.created_at < created_to,
+            )
         )
         return set(result.scalars().all())
 

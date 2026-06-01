@@ -15,6 +15,8 @@ from comments_ai_bot.admin_bot.keyboards import (
     LOGS,
     READY_TO_COMMENT_POSTS,
     SETTINGS,
+    START_MAILING,
+    STOP_MAILING,
     TELEGRAM_AUTH,
     TEST_COMMENT,
     cancel_keyboard,
@@ -33,6 +35,7 @@ from comments_ai_bot.db.repositories import (
 from comments_ai_bot.db.session import async_session_factory
 from comments_ai_bot.discovery.tgstat import TgstatChannelImporter
 from comments_ai_bot.monitoring.manual_scan import ManualPostScanner
+from comments_ai_bot.publishing.mailing import mailing_automation
 from comments_ai_bot.publishing.test_comments import TestCommentSender
 from comments_ai_bot.telegram_client.auth import (
     copy_legacy_session_files,
@@ -240,6 +243,31 @@ async def ready_to_comment_posts_from_menu(message: Message) -> None:
 @router.message(F.text == TEST_COMMENT)
 async def send_test_comment_from_menu(message: Message) -> None:
     await TestCommentsReporter(message).send()
+
+
+@router.message(F.text == START_MAILING)
+async def start_mailing_from_menu(message: Message) -> None:
+    if message.bot is None:
+        await message.answer("Не удалось получить bot instance.", reply_markup=main_menu())
+        return
+
+    started = await mailing_automation.start(message.bot, message.chat.id)
+    if not started:
+        await message.answer("Рассылка уже запущена.", reply_markup=main_menu())
+        return
+
+    await message.answer(
+        "Рассылка запущена. Каждые 30 секунд каждый активный TG-аккаунт делает "
+        "до одной отправки в канал, где сегодня ещё не было успешного комментария.",
+        reply_markup=main_menu(),
+    )
+
+
+@router.message(F.text == STOP_MAILING)
+async def stop_mailing_from_menu(message: Message) -> None:
+    stopped = await mailing_automation.stop()
+    text = "Рассылка остановлена." if stopped else "Рассылка не запущена."
+    await message.answer(text, reply_markup=main_menu())
 
 
 @router.message(F.text == TELEGRAM_AUTH)
