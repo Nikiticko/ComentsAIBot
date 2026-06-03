@@ -50,6 +50,24 @@ class Settings:
         return _getenv_required("OPENAI_API_KEY")
 
     @property
+    def openai_model(self) -> str:
+        return _getenv("OPENAI_MODEL", "gpt-4o-mini") or "gpt-4o-mini"
+
+    @property
+    def ai_topic_prompt(self) -> str:
+        return (
+            _getenv(
+                "AI_TOPIC_PROMPT",
+                (
+                    "Определи основную тему Telegram-поста. Ответь строго JSON: "
+                    '{"topic":"краткая тема до 5 слов","confidence":0.0,'
+                    '"reason":"почему выбрана тема до 12 слов"}'
+                ),
+            )
+            or ""
+        )
+
+    @property
     def telegram_api_id(self) -> int:
         return int(_getenv_required("TELEGRAM_API_ID"))
 

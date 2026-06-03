@@ -9,6 +9,7 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from comments_ai_bot.admin_bot.keyboards import (
     ADD_CHANNEL,
+    AI_TEST,
     AUTO_ADD_CHANNELS,
     CANCEL,
     CHANNEL_LIST,
@@ -25,6 +26,7 @@ from comments_ai_bot.admin_bot.keyboards import (
     telegram_account_actions,
     telegram_accounts_menu,
 )
+from comments_ai_bot.ai.topic_test import AiTopicTester
 from comments_ai_bot.admin_bot.states import ChannelStates
 from comments_ai_bot.core.config import settings
 from comments_ai_bot.db.repositories import (
@@ -243,6 +245,11 @@ async def ready_to_comment_posts_from_menu(message: Message) -> None:
 @router.message(F.text == TEST_COMMENT)
 async def send_test_comment_from_menu(message: Message) -> None:
     await TestCommentsReporter(message).send()
+
+
+@router.message(F.text == AI_TEST)
+async def test_ai_topic_from_menu(message: Message) -> None:
+    await AiTopicTestReporter(message).send()
 
 
 @router.message(F.text == START_MAILING)
@@ -600,6 +607,62 @@ class TestCommentsReporter:
             await self.message.answer(chunk)
 
 
+class AiTopicTestReporter:
+    def __init__(self, message: Message) -> None:
+        self.message = message
+
+    async def send(self) -> None:
+        await self.message.answer("Ищу случайный пост с открытыми комментариями и анализирую тему.")
+
+        try:
+            result = await AiTopicTester().analyze_random_commentable_post()
+        except Exception as error:
+            logger.exception("AI topic test button failed")
+            async with async_session_factory() as session:
+                await LogRepository(session).error(
+                    "ai_topic_test_failed",
+                    str(error),
+                    payload={"exception_type": type(error).__name__},
+                )
+                await session.commit()
+            await self.message.answer(
+                "Тест ИИ не выполнен. Подробности записаны в logs/app.log.",
+                reply_markup=main_menu(),
+            )
+            return
+
+        if result.post is None:
+            reason = "; ".join(result.errors[:5]) or "подходящий пост не найден"
+            await self.message.answer(
+                (
+                    "Тест ИИ не выполнен.\n"
+                    f"Каналов: {result.channels_total}, проверено: {result.channels_attempted}\n"
+                    f"Постов проверено: {result.posts_checked}\n"
+                    f"Причина: {reason}"
+                ),
+                reply_markup=main_menu(),
+            )
+            return
+
+        analysis = result.post.topic_analysis
+        confidence = analysis.get("confidence")
+        confidence_text = "-" if confidence is None else str(confidence)
+        reason = analysis.get("reason") or "-"
+        text_preview = crop_text(result.post.text, 1_500)
+        answer = (
+            "Тест ИИ готов.\n"
+            f"Канал: {result.post.channel_username}\n"
+            f"Пост: {result.post.url}\n"
+            f"Просмотры: {result.post.views_count or 0}\n"
+            f"Аккаунт: {result.account or '-'}\n\n"
+            f"Тема: {analysis.get('topic') or 'не определено'}\n"
+            f"Уверенность: {confidence_text}\n"
+            f"Причина: {reason}\n\n"
+            f"Текст поста:\n{text_preview}"
+        )
+        await self.message.answer(answer, reply_markup=main_menu())
+
+
 class TgstatImportReporter:
     def __init__(self, message: Message) -> None:
         self.message = message
@@ -674,6 +737,13 @@ def split_messages(items: list[str], limit: int = TELEGRAM_MESSAGE_LIMIT) -> lis
         chunks.append(current)
 
     return chunks
+
+
+def crop_text(text: str, limit: int) -> str:
+    clean_text = text.strip()
+    if len(clean_text) <= limit:
+        return clean_text
+    return f"{clean_text[: limit - 3]}..."
 
 
 @router.message(F.text == SETTINGS)

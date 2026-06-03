@@ -6,6 +6,7 @@ AUTO_ADD_CHANNELS = "Авто каналы TGStat"
 CHANNEL_LIST = "Список каналов"
 READY_TO_COMMENT_POSTS = "Ready 20к+"
 TEST_COMMENT = "Тест коммент"
+AI_TEST = "Тест ИИ"
 START_MAILING = "Начать рассылку"
 STOP_MAILING = "Остановить рассылку"
 TELEGRAM_AUTH = "Аккаунты TG"
@@ -20,6 +21,7 @@ def main_menu() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=ADD_CHANNEL), KeyboardButton(text=CHANNEL_LIST)],
             [KeyboardButton(text=AUTO_ADD_CHANNELS)],
             [KeyboardButton(text=READY_TO_COMMENT_POSTS), KeyboardButton(text=TEST_COMMENT)],
+            [KeyboardButton(text=AI_TEST)],
             [KeyboardButton(text=START_MAILING), KeyboardButton(text=STOP_MAILING)],
             [KeyboardButton(text=TELEGRAM_AUTH), KeyboardButton(text=LOGS)],
             [KeyboardButton(text=SETTINGS)],
