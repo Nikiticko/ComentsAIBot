@@ -25,6 +25,12 @@ def _getenv_int_list(name: str) -> list[int]:
     return [int(item.strip()) for item in value.split(",") if item.strip()]
 
 
+def _getenv_str_list(name: str, default: str = "") -> list[str]:
+    value = _getenv(name, default) or ""
+    normalized = value.replace("\n", ",").replace(";", ",")
+    return [item.strip() for item in normalized.split(",") if item.strip()]
+
+
 def _getenv_bool(name: str, default: bool = False) -> bool:
     value = _getenv(name)
     if value is None:
@@ -62,6 +68,43 @@ class Settings:
                     "Определи основную тему Telegram-поста. Ответь строго JSON: "
                     '{"topic":"краткая тема до 5 слов","confidence":0.0,'
                     '"reason":"почему выбрана тема до 12 слов"}'
+                ),
+            )
+            or ""
+        )
+
+    @property
+    def post_trigger_words(self) -> list[str]:
+        return _getenv_str_list(
+            "POST_TRIGGER_WORDS",
+            (
+                "война,обстрел,обстріл,ракета,шахед,смерть,погиб,загинув,"
+                "теракт,мобилизация,мобілізація,похорон,донат,сбор,збір"
+            ),
+        )
+
+    @property
+    def forbidden_topics(self) -> list[str]:
+        return _getenv_str_list(
+            "FORBIDDEN_TOPICS",
+            (
+                "политика,война,трагедии,религия,медицина,смерть,теракты,"
+                "катастрофы,преступления,дети в опасных ситуациях,мобилизация,"
+                "национальные конфликты,похороны,тяжёлые болезни,"
+                "благотворительные сборы"
+            ),
+        )
+
+    @property
+    def ai_forbidden_topic_prompt(self) -> str:
+        return (
+            _getenv(
+                "AI_FORBIDDEN_TOPIC_PROMPT",
+                (
+                    "Проверь, относится ли Telegram-пост к одной из запрещённых тем. "
+                    "Ответь строго JSON: "
+                    '{"forbidden":false,"matched_topic":null,"confidence":0.0,'
+                    '"reason":"краткая причина до 12 слов","topic":"краткая тема поста"}'
                 ),
             )
             or ""

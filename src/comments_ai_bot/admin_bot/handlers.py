@@ -646,18 +646,24 @@ class AiTopicTestReporter:
             )
             return
 
-        analysis = result.post.topic_analysis
-        confidence = analysis.get("confidence")
-        confidence_text = "-" if confidence is None else str(confidence)
-        reason = analysis.get("reason") or "-"
+        validation = result.post.validation
+        confidence_text = "-" if validation.confidence is None else str(validation.confidence)
+        reason = validation.reason or "-"
+        matched = validation.trigger_word or validation.matched_topic or "-"
+        status = "прошёл" if validation.passed else "не прошёл"
+        ai_used = "да" if validation.ai_used else "нет"
         text_preview = crop_text(result.post.text, 1_500)
         answer = (
-            "Тест ИИ готов.\n"
+            "Тест валидации готов.\n"
             f"Канал: {result.post.channel_username}\n"
             f"Пост: {result.post.url}\n"
             f"Просмотры: {result.post.views_count or 0}\n"
             f"Аккаунт: {result.account or '-'}\n\n"
-            f"Тема: {analysis.get('topic') or 'не определено'}\n"
+            f"Статус: {status}\n"
+            f"Уровень: {validation.level}\n"
+            f"ИИ работал: {ai_used}\n"
+            f"Совпадение: {matched}\n"
+            f"Тема: {validation.topic or '-'}\n"
             f"Уверенность: {confidence_text}\n"
             f"Причина: {reason}\n\n"
             f"Текст поста:\n{text_preview}"

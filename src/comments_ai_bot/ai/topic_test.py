@@ -16,6 +16,7 @@ from comments_ai_bot.db.repositories import (
     TelegramAccountRepository,
 )
 from comments_ai_bot.db.session import async_session_factory
+from comments_ai_bot.filtering.validation import PostValidationResult, PostValidator
 from comments_ai_bot.monitoring.manual_scan import POST_SCAN_HOURS, POST_SCAN_LIMIT
 from comments_ai_bot.telegram_client.client import TelegramAccountClient
 
@@ -29,7 +30,7 @@ class AiTopicTestPost:
     telegram_post_id: int
     text: str
     views_count: int | None
-    topic_analysis: dict
+    validation: PostValidationResult
 
     @property
     def url(self) -> str:
@@ -50,7 +51,7 @@ class AiTopicTestResult:
 
 class AiTopicTester:
     def __init__(self, ai_service: AiService | None = None) -> None:
-        self.ai_service = ai_service or AiService()
+        self.validator = PostValidator(ai_service)
 
     async def analyze_random_commentable_post(self) -> AiTopicTestResult:
         result = AiTopicTestResult()
@@ -88,7 +89,7 @@ class AiTopicTester:
         await self._write_log(
             LogLevel.INFO,
             "ai_topic_test_started",
-            "Запущен тест определения темы поста через ИИ.",
+            "Запущен тест валидации поста через триггеры и ИИ.",
             payload={
                 "channels_total": result.channels_total,
                 "max_channel_attempts": MAX_CHANNEL_ATTEMPTS,
@@ -97,6 +98,8 @@ class AiTopicTester:
                 "model": settings.openai_model,
                 "post_scan_limit": POST_SCAN_LIMIT,
                 "post_scan_hours": POST_SCAN_HOURS,
+                "trigger_words_count": len(settings.post_trigger_words),
+                "forbidden_topics_count": len(settings.forbidden_topics),
             },
         )
 
@@ -198,16 +201,18 @@ class AiTopicTester:
                 result.posts_comments_closed += 1
                 continue
 
-            topic_analysis = await self.ai_service.analyze_topic(text)
-            await self._save_post(channel, post, topic_analysis)
+            validation = await self.validator.validate(text)
+            await self._save_post(channel, post, validation)
             await self._write_log(
-                LogLevel.INFO,
+                LogLevel.INFO if validation.passed else LogLevel.WARNING,
                 "ai_topic_test_completed",
-                f"ИИ определил тему поста {self._post_url(channel.username, post.id)}",
+                "Пост прошёл тестовую валидацию."
+                if validation.passed
+                else f"Пост не прошёл тестовую валидацию: {validation.level}",
                 "channel",
                 channel.id,
                 payload={
-                    "topic_analysis": topic_analysis,
+                    "validation": validation.to_dict(),
                     "channel_username": channel.username,
                     "post_id": post.id,
                     "post_url": self._post_url(channel.username, post.id),
@@ -215,6 +220,9 @@ class AiTopicTester:
                     "account": account_label,
                     "model": settings.openai_model,
                     "text_chars": len(text),
+                    "ai_used": validation.ai_used,
+                    "validation_level": validation.level,
+                    "passed": validation.passed,
                     "channels_attempted": result.channels_attempted,
                     "posts_checked": result.posts_checked,
                     "posts_without_text": result.posts_without_text,
@@ -226,21 +234,26 @@ class AiTopicTester:
                 telegram_post_id=post.id,
                 text=text,
                 views_count=post.views,
-                topic_analysis=topic_analysis,
+                validation=validation,
             )
 
         return None
 
-    async def _save_post(self, channel, post, topic_analysis: dict) -> None:
+    async def _save_post(self, channel, post, validation: PostValidationResult) -> None:
         async with async_session_factory() as session:
             db_post = await PostRepository(session).upsert(
                 channel_id=channel.id,
                 telegram_post_id=post.id,
                 text=post.text,
                 views_count=post.views or 0,
-                status=PostStatus.READY_TO_COMMENT.value,
+                status=(
+                    PostStatus.READY_TO_COMMENT.value
+                    if validation.passed
+                    else PostStatus.FORBIDDEN_TOPIC.value
+                ),
+                skip_reason=None if validation.passed else validation.reason,
             )
-            db_post.topic_analysis = topic_analysis
+            db_post.topic_analysis = validation.to_dict()
             await session.commit()
 
     async def _write_log(

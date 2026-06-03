@@ -44,5 +44,58 @@ class AiService:
             "reason": str(payload.get("reason") or "").strip() or None,
         }
 
+    async def validate_forbidden_topic(
+        self,
+        text: str,
+        forbidden_topics: list[str],
+    ) -> dict[str, Any]:
+        trimmed_text = text.strip()[:MAX_TOPIC_TEXT_CHARS]
+        if not trimmed_text:
+            return {
+                "forbidden": False,
+                "matched_topic": None,
+                "confidence": 0,
+                "reason": "Пост без текстового содержимого",
+                "topic": "нет текста",
+            }
+
+        response = await self.client.chat.completions.create(
+            model=settings.openai_model,
+            messages=[
+                {"role": "system", "content": settings.ai_forbidden_topic_prompt},
+                {
+                    "role": "user",
+                    "content": (
+                        "Запрещённые темы:\n"
+                        f"{', '.join(forbidden_topics)}\n\n"
+                        f"Пост:\n{trimmed_text}"
+                    ),
+                },
+            ],
+            response_format={"type": "json_object"},
+            temperature=0,
+            max_tokens=140,
+        )
+        content = response.choices[0].message.content or "{}"
+
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError:
+            payload = {
+                "forbidden": False,
+                "matched_topic": None,
+                "confidence": None,
+                "reason": "Ответ не JSON",
+                "topic": content.strip(),
+            }
+
+        return {
+            "forbidden": bool(payload.get("forbidden")),
+            "matched_topic": payload.get("matched_topic"),
+            "confidence": payload.get("confidence"),
+            "reason": str(payload.get("reason") or "").strip() or None,
+            "topic": str(payload.get("topic") or "не определено").strip(),
+        }
+
     async def generate_comment(self, text: str) -> str:
         raise NotImplementedError
