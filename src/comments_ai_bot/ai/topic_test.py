@@ -3,6 +3,7 @@ import logging
 import random
 from pathlib import Path
 
+from openai import OpenAIError
 from telethon.errors import RPCError
 
 from comments_ai_bot.ai.service import AiService
@@ -42,6 +43,8 @@ class AiTopicTestResult:
     channels_total: int = 0
     channels_attempted: int = 0
     posts_checked: int = 0
+    posts_without_text: int = 0
+    posts_comments_closed: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -59,11 +62,21 @@ class AiTopicTester:
 
         if not channels:
             result.errors.append("Нет активных каналов.")
+            await self._write_log(
+                LogLevel.WARNING,
+                "ai_topic_test_no_channels",
+                "Тест ИИ остановлен: нет активных каналов.",
+            )
             return result
 
         legacy_session_exists = Path("data", f"{settings.telegram_session_name}.session").exists()
         if not accounts and not legacy_session_exists:
             result.errors.append("Нет активного Telegram-аккаунта.")
+            await self._write_log(
+                LogLevel.ERROR,
+                "ai_topic_test_no_account",
+                "Тест ИИ остановлен: нет активного Telegram-аккаунта.",
+            )
             return result
 
         random.shuffle(channels)
@@ -72,17 +85,65 @@ class AiTopicTester:
         result.account = ", ".join(
             session_name or settings.telegram_session_name for session_name in account_sessions
         )
+        await self._write_log(
+            LogLevel.INFO,
+            "ai_topic_test_started",
+            "Запущен тест определения темы поста через ИИ.",
+            payload={
+                "channels_total": result.channels_total,
+                "max_channel_attempts": MAX_CHANNEL_ATTEMPTS,
+                "accounts_count": len(account_sessions),
+                "account": result.account,
+                "model": settings.openai_model,
+                "post_scan_limit": POST_SCAN_LIMIT,
+                "post_scan_hours": POST_SCAN_HOURS,
+            },
+        )
 
         for index, channel in enumerate(channels[:MAX_CHANNEL_ATTEMPTS]):
             session_name = account_sessions[index % len(account_sessions)]
+            account_label = session_name or settings.telegram_session_name
             result.channels_attempted += 1
 
             try:
                 async with TelegramAccountClient(session_name) as telegram:
-                    found_post = await self._find_commentable_post(channel, telegram, result)
+                    found_post = await self._find_commentable_post(
+                        channel,
+                        telegram,
+                        result,
+                        account_label,
+                    )
+            except OpenAIError as error:
+                logger.exception("AI topic test OpenAI request failed")
+                result.errors.append(f"OpenAI: {error}")
+                await self._write_log(
+                    LogLevel.ERROR,
+                    "ai_topic_openai_failed",
+                    f"OpenAI не обработал пост из {channel.username}: {error}",
+                    "channel",
+                    channel.id,
+                    payload={
+                        "exception_type": type(error).__name__,
+                        "channel_username": channel.username,
+                        "account": account_label,
+                        "model": settings.openai_model,
+                    },
+                )
+                return result
             except (RPCError, ValueError, RuntimeError) as error:
                 logger.warning("AI topic test skipped channel %s: %s", channel.username, error)
                 result.errors.append(f"{channel.username}: {error}")
+                await self._write_log(
+                    LogLevel.WARNING,
+                    "ai_topic_test_channel_skipped",
+                    f"Канал {channel.username} пропущен в тесте ИИ: {error}",
+                    "channel",
+                    channel.id,
+                    payload={
+                        "exception_type": type(error).__name__,
+                        "account": account_label,
+                    },
+                )
                 continue
 
             if session_name is not None:
@@ -96,6 +157,19 @@ class AiTopicTester:
 
         if result.post is None:
             result.errors.append("Не найден пост с текстом и открытыми комментариями.")
+            await self._write_log(
+                LogLevel.WARNING,
+                "ai_topic_test_no_post",
+                "Тест ИИ не нашёл пост с текстом и открытыми комментариями.",
+                payload={
+                    "channels_total": result.channels_total,
+                    "channels_attempted": result.channels_attempted,
+                    "posts_checked": result.posts_checked,
+                    "posts_without_text": result.posts_without_text,
+                    "posts_comments_closed": result.posts_comments_closed,
+                    "errors": result.errors[:10],
+                },
+            )
         return result
 
     async def _find_commentable_post(
@@ -103,6 +177,7 @@ class AiTopicTester:
         channel,
         telegram: TelegramAccountClient,
         result: AiTopicTestResult,
+        account_label: str,
     ) -> AiTopicTestPost | None:
         posts = await telegram.fetch_recent_posts(
             channel.username,
@@ -114,11 +189,13 @@ class AiTopicTester:
         for post in posts:
             text = (post.text or "").strip()
             if not text:
+                result.posts_without_text += 1
                 continue
 
             result.posts_checked += 1
             availability = await telegram.can_comment(channel.username, post.id, post.message_ids)
             if not availability.available:
+                result.posts_comments_closed += 1
                 continue
 
             topic_analysis = await self.ai_service.analyze_topic(text)
@@ -129,7 +206,20 @@ class AiTopicTester:
                 f"ИИ определил тему поста {self._post_url(channel.username, post.id)}",
                 "channel",
                 channel.id,
-                payload={"topic_analysis": topic_analysis},
+                payload={
+                    "topic_analysis": topic_analysis,
+                    "channel_username": channel.username,
+                    "post_id": post.id,
+                    "post_url": self._post_url(channel.username, post.id),
+                    "views_count": post.views or 0,
+                    "account": account_label,
+                    "model": settings.openai_model,
+                    "text_chars": len(text),
+                    "channels_attempted": result.channels_attempted,
+                    "posts_checked": result.posts_checked,
+                    "posts_without_text": result.posts_without_text,
+                    "posts_comments_closed": result.posts_comments_closed,
+                },
             )
             return AiTopicTestPost(
                 channel_username=channel.username,

@@ -638,6 +638,8 @@ class AiTopicTestReporter:
                     "Тест ИИ не выполнен.\n"
                     f"Каналов: {result.channels_total}, проверено: {result.channels_attempted}\n"
                     f"Постов проверено: {result.posts_checked}\n"
+                    f"Без текста: {result.posts_without_text}\n"
+                    f"Комментарии закрыты: {result.posts_comments_closed}\n"
                     f"Причина: {reason}"
                 ),
                 reply_markup=main_menu(),
