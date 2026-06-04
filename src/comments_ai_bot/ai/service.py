@@ -7,6 +7,7 @@ from comments_ai_bot.core.config import settings
 
 MAX_TOPIC_TEXT_CHARS = 2_000
 MAX_COMMENT_TEXT_CHARS = 120
+MIN_AI_CONTEXT_TEXT_CHARS = 250
 
 
 class AiService:

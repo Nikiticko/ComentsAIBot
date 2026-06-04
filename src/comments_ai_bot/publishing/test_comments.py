@@ -13,7 +13,7 @@ from telethon.errors import (
     UserBannedInChannelError,
 )
 
-from comments_ai_bot.ai.service import AiService
+from comments_ai_bot.ai.service import MIN_AI_CONTEXT_TEXT_CHARS, AiService
 from comments_ai_bot.core.config import settings
 from comments_ai_bot.core.types import CommentStatus, LogLevel, PostStatus
 from comments_ai_bot.db.repositories import (
@@ -70,6 +70,14 @@ class TestCommentResult:
     channels_total: int = 0
     channels_processed: int = 0
     posts_found: int = 0
+    posts_checked: int = 0
+    posts_reached_ai: int = 0
+    posts_without_text: int = 0
+    posts_too_short: int = 0
+    posts_comments_closed: int = 0
+    broken_channels: int = 0
+    ai_rejected_posts: int = 0
+    ai_rejected_comments: int = 0
     comments_sent: int = 0
     comments_failed: int = 0
     comments_skipped: int = 0
@@ -241,6 +249,7 @@ class TestCommentSender:
             result.comments_skipped += 1
             result.items.append(TestCommentItem(channel.username, "skipped", str(error)))
             if is_missing_username_error(error):
+                result.broken_channels += 1
                 await self._disable_channel(
                     channel.id,
                     channel.username,
@@ -298,9 +307,36 @@ class TestCommentSender:
         result: TestCommentResult,
     ) -> str:
         post_url = self._post_url(channel.username, post.id)
+        post_text = (post.text or "").strip()
+        if not post_text:
+            result.posts_without_text += 1
+            result.comments_skipped += 1
+            result.items.append(TestCommentItem(post_url, "skipped", "Пост без текста"))
+            await self._save_post(
+                channel,
+                post,
+                PostStatus.SKIPPED.value,
+                "Пост без текста",
+            )
+            return "skip"
+        if len(post_text) < MIN_AI_CONTEXT_TEXT_CHARS:
+            result.posts_too_short += 1
+            result.comments_skipped += 1
+            reason = f"Текст короче {MIN_AI_CONTEXT_TEXT_CHARS} символов"
+            result.items.append(TestCommentItem(post_url, "skipped", reason))
+            await self._save_post(
+                channel,
+                post,
+                PostStatus.SKIPPED.value,
+                reason,
+            )
+            return "skip"
+
+        result.posts_checked += 1
         availability = await self._check_comments(channel.username, post, telegram)
 
         if not availability.available:
+            result.posts_comments_closed += 1
             result.comments_skipped += 1
             result.items.append(TestCommentItem(post_url, "skipped", availability.reason))
             await self._save_post(
@@ -311,20 +347,9 @@ class TestCommentSender:
             )
             return "skip"
 
-        post_text = (post.text or "").strip()
-        if not post_text:
-            result.comments_skipped += 1
-            result.items.append(TestCommentItem(post_url, "skipped", "Пост без текста"))
-            await self._save_post(
-                channel,
-                post,
-                PostStatus.SKIPPED.value,
-                "Пост без текста",
-            )
-            return "skip"
-
         db_post_id = await self._save_post(channel, post, PostStatus.READY_TO_COMMENT.value)
         try:
+            result.posts_reached_ai += 1
             validation = await self.validator.validate(post_text)
             await self._save_post(
                 channel,
@@ -338,6 +363,7 @@ class TestCommentSender:
                 topic_analysis=validation.to_dict(),
             )
             if not validation.passed:
+                result.ai_rejected_posts += 1
                 result.comments_skipped += 1
                 result.items.append(TestCommentItem(post_url, "skipped", validation.reason))
                 await self._write_log(
@@ -416,6 +442,7 @@ class TestCommentSender:
             return "done"
 
         if not comment_validation["allowed"]:
+            result.ai_rejected_comments += 1
             result.comments_skipped += 1
             result.items.append(
                 TestCommentItem(post_url, "skipped", comment_validation.get("reason"))

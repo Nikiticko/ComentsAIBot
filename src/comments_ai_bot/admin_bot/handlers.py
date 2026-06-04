@@ -26,6 +26,7 @@ from comments_ai_bot.admin_bot.keyboards import (
     telegram_account_actions,
     telegram_accounts_menu,
 )
+from comments_ai_bot.ai.service import MIN_AI_CONTEXT_TEXT_CHARS
 from comments_ai_bot.ai.topic_test import AiTopicTester, MIN_AI_TEST_TEXT_CHARS
 from comments_ai_bot.admin_bot.states import ChannelStates
 from comments_ai_bot.core.config import settings
@@ -264,8 +265,14 @@ async def start_mailing_from_menu(message: Message) -> None:
         return
 
     await message.answer(
-        "Рассылка запущена. Каждые 30 секунд каждый активный TG-аккаунт делает "
-        "до одной отправки в канал, где сегодня ещё не было успешного комментария.",
+        (
+            "Рассылка запущена. Каждые 30 секунд каждый активный TG-аккаунт "
+            "делает до одной отправки в канал, где сегодня ещё не было "
+            "успешного комментария.\n"
+            f"Процедура: текст от {MIN_AI_CONTEXT_TEXT_CHARS} символов, "
+            "открытые комментарии, анализ темы ИИ, генерация комментария, "
+            "проверка комментария ИИ, публикация."
+        ),
         reply_markup=main_menu(),
     )
 

@@ -6,7 +6,7 @@ from pathlib import Path
 from openai import OpenAIError
 from telethon.errors import RPCError
 
-from comments_ai_bot.ai.service import AiService
+from comments_ai_bot.ai.service import MIN_AI_CONTEXT_TEXT_CHARS, AiService
 from comments_ai_bot.core.config import settings
 from comments_ai_bot.core.types import LogLevel, PostStatus
 from comments_ai_bot.db.repositories import (
@@ -24,7 +24,7 @@ from comments_ai_bot.telegram_client.client import (
 )
 
 MAX_CHANNEL_ATTEMPTS = 20
-MIN_AI_TEST_TEXT_CHARS = 250
+MIN_AI_TEST_TEXT_CHARS = MIN_AI_CONTEXT_TEXT_CHARS
 logger = logging.getLogger(__name__)
 
 

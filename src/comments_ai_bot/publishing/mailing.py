@@ -88,7 +88,7 @@ class MailingAutomation:
                     for index, account in enumerate(accounts)
                 ]
                 account_results = await asyncio.gather(*tasks, return_exceptions=True)
-                cycle_sent, sent_report_lines = await self._handle_account_results(
+                cycle_sent, sent_report_lines, cycle_stats = await self._handle_account_results(
                     account_results
                 )
 
@@ -98,11 +98,12 @@ class MailingAutomation:
                 await self._write_log(
                     LogLevel.INFO,
                     "mailing_cycle_finished",
-                    f"Цикл авторассылки завершён. Отправлено: {cycle_sent}.",
+                    self._cycle_message(cycle_sent, cycle_stats),
                     payload={
                         "accounts": len(accounts),
                         "candidate_channels": len(candidate_channels),
                         "sent": cycle_sent,
+                        **cycle_stats,
                     },
                 )
                 await asyncio.sleep(MAILING_INTERVAL_SECONDS)
@@ -170,9 +171,10 @@ class MailingAutomation:
     async def _handle_account_results(
         self,
         account_results: list[tuple[TelegramAccount, TestCommentResult] | BaseException],
-    ) -> tuple[int, list[str]]:
+    ) -> tuple[int, list[str], dict[str, int]]:
         cycle_sent = 0
         sent_report_lines: list[str] = []
+        cycle_stats = self._empty_cycle_stats()
 
         for item in account_results:
             if isinstance(item, BaseException):
@@ -185,7 +187,12 @@ class MailingAutomation:
                 continue
 
             account, result = item
-            sent_items = [result_item for result_item in result.items if result_item.status == "sent"]
+            self._add_result_stats(cycle_stats, result)
+            sent_items = [
+                result_item
+                for result_item in result.items
+                if result_item.status == "sent"
+            ]
             if sent_items:
                 cycle_sent += len(sent_items)
                 account_title = self._account_title(account)
@@ -200,7 +207,44 @@ class MailingAutomation:
                     f"Аккаунт {result.account}: {'; '.join(result.errors)}",
                 )
 
-        return cycle_sent, sent_report_lines
+        return cycle_sent, sent_report_lines, cycle_stats
+
+    def _empty_cycle_stats(self) -> dict[str, int]:
+        return {
+            "channels_processed": 0,
+            "posts_found": 0,
+            "posts_checked": 0,
+            "posts_reached_ai": 0,
+            "posts_without_text": 0,
+            "posts_too_short": 0,
+            "posts_comments_closed": 0,
+            "broken_channels": 0,
+            "ai_rejected_posts": 0,
+            "ai_rejected_comments": 0,
+            "comments_skipped": 0,
+            "comments_failed": 0,
+        }
+
+    def _add_result_stats(
+        self,
+        cycle_stats: dict[str, int],
+        result: TestCommentResult,
+    ) -> None:
+        for key in cycle_stats:
+            cycle_stats[key] += int(getattr(result, key))
+
+    def _cycle_message(self, sent: int, stats: dict[str, int]) -> str:
+        return (
+            f"Цикл авторассылки завершён. Отправлено: {sent}. "
+            f"Постов проверено: {stats['posts_checked']}, "
+            f"дошло до ИИ: {stats['posts_reached_ai']}, "
+            f"коротких: {stats['posts_too_short']}, "
+            f"без текста: {stats['posts_without_text']}, "
+            f"комментарии закрыты: {stats['posts_comments_closed']}, "
+            f"ИИ отклонил постов: {stats['ai_rejected_posts']}, "
+            f"ИИ отклонил комментариев: {stats['ai_rejected_comments']}, "
+            f"битых каналов: {stats['broken_channels']}."
+        )
 
     async def _get_today_commented_channel_ids(self) -> set[int]:
         now = datetime.now(LOCAL_TZ)
