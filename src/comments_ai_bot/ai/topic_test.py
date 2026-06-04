@@ -18,7 +18,10 @@ from comments_ai_bot.db.repositories import (
 from comments_ai_bot.db.session import async_session_factory
 from comments_ai_bot.filtering.validation import PostValidationResult, PostValidator
 from comments_ai_bot.monitoring.manual_scan import POST_SCAN_HOURS, POST_SCAN_LIMIT
-from comments_ai_bot.telegram_client.client import TelegramAccountClient
+from comments_ai_bot.telegram_client.client import (
+    TelegramAccountClient,
+    is_missing_username_error,
+)
 
 MAX_CHANNEL_ATTEMPTS = 20
 MIN_AI_TEST_TEXT_CHARS = 250
@@ -47,9 +50,11 @@ class AiTopicTestResult:
     channels_total: int = 0
     channels_attempted: int = 0
     posts_checked: int = 0
+    posts_reached_ai: int = 0
     posts_without_text: int = 0
     posts_too_short: int = 0
     posts_comments_closed: int = 0
+    broken_channels: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -142,6 +147,13 @@ class AiTopicTester:
             except (RPCError, ValueError, RuntimeError) as error:
                 logger.warning("AI topic test skipped channel %s: %s", channel.username, error)
                 result.errors.append(f"{channel.username}: {error}")
+                if is_missing_username_error(error):
+                    result.broken_channels += 1
+                    await self._disable_channel(
+                        channel.id,
+                        channel.username,
+                        str(error),
+                    )
                 await self._write_log(
                     LogLevel.WARNING,
                     "ai_topic_test_channel_skipped",
@@ -180,9 +192,11 @@ class AiTopicTester:
                     "channels_total": result.channels_total,
                     "channels_attempted": result.channels_attempted,
                     "posts_checked": result.posts_checked,
+                    "posts_reached_ai": result.posts_reached_ai,
                     "posts_without_text": result.posts_without_text,
                     "posts_too_short": result.posts_too_short,
                     "posts_comments_closed": result.posts_comments_closed,
+                    "broken_channels": result.broken_channels,
                     "min_text_chars": MIN_AI_TEST_TEXT_CHARS,
                     "errors": result.errors[:10],
                 },
@@ -218,6 +232,7 @@ class AiTopicTester:
                 result.posts_comments_closed += 1
                 continue
 
+            result.posts_reached_ai += 1
             validation = await self.validator.validate(text)
             generated_comment = None
             comment_validation = None
@@ -234,7 +249,13 @@ class AiTopicTester:
                 if validation.passed and (comment_validation or {}).get("allowed", True)
                 else LogLevel.WARNING,
                 "ai_topic_test_completed",
-                self._completion_message(validation, comment_validation),
+                self._readable_ai_message(
+                    channel.username,
+                    post.id,
+                    validation,
+                    generated_comment,
+                    comment_validation,
+                ),
                 "channel",
                 channel.id,
                 payload={
@@ -253,9 +274,11 @@ class AiTopicTester:
                     "comment_validation": comment_validation,
                     "channels_attempted": result.channels_attempted,
                     "posts_checked": result.posts_checked,
+                    "posts_reached_ai": result.posts_reached_ai,
                     "posts_without_text": result.posts_without_text,
                     "posts_too_short": result.posts_too_short,
                     "posts_comments_closed": result.posts_comments_closed,
+                    "broken_channels": result.broken_channels,
                     "min_text_chars": MIN_AI_TEST_TEXT_CHARS,
                 },
             )
@@ -311,16 +334,39 @@ class AiTopicTester:
     def _post_url(self, channel_username: str, post_id: int) -> str:
         return f"https://t.me/{channel_username.removeprefix('@')}/{post_id}"
 
-    def _completion_message(
+    async def _disable_channel(
         self,
+        channel_id: int,
+        channel_username: str,
+        reason: str,
+    ) -> None:
+        async with async_session_factory() as session:
+            await ChannelRepository(session).disable(channel_id)
+            await LogRepository(session).warning(
+                "channel_auto_disabled",
+                f"{channel_username} | отключён | {reason}",
+                "channel",
+                channel_id,
+                payload={"reason": reason, "source": "ai_topic_test"},
+            )
+            await session.commit()
+
+    def _readable_ai_message(
+        self,
+        channel_username: str,
+        post_id: int,
         validation: PostValidationResult,
+        generated_comment: str | None,
         comment_validation: dict | None,
     ) -> str:
+        topic = validation.topic or validation.matched_topic or "-"
+        comment = generated_comment or "-"
+        allowed = "-"
         if not validation.passed:
-            return f"Пост не прошёл тестовую валидацию: {validation.level}"
-        if comment_validation and not comment_validation.get("allowed"):
-            return "Комментарий сгенерирован, но не прошёл ИИ-проверку."
+            allowed = "нет"
+        if comment_validation is not None:
+            allowed = "да" if comment_validation.get("allowed") else "нет"
         return (
-            "Пост прошёл тестовую валидацию, "
-            "комментарий сгенерирован без публикации."
+            f"{channel_username} | {self._post_url(channel_username, post_id)} | "
+            f"тема: {topic} | комментарий: {comment} | allowed: {allowed}"
         )

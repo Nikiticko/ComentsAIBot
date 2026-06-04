@@ -14,7 +14,11 @@ from comments_ai_bot.db.repositories import (
 )
 from comments_ai_bot.db.session import async_session_factory
 from comments_ai_bot.filtering.rules import MIN_POST_VIEWS
-from comments_ai_bot.telegram_client.client import CommentAvailability, TelegramAccountClient
+from comments_ai_bot.telegram_client.client import (
+    CommentAvailability,
+    TelegramAccountClient,
+    is_missing_username_error,
+)
 
 POST_SCAN_LIMIT = 100
 POST_SCAN_HOURS = 24
@@ -129,6 +133,15 @@ class ManualPostScanner:
             result.errors.append(f"{channel.username}: {error}")
             logger.exception("Failed to scan channel %s", channel.username)
             async with async_session_factory() as session:
+                if is_missing_username_error(error):
+                    await ChannelRepository(session).disable(channel.id)
+                    await LogRepository(session).warning(
+                        "channel_auto_disabled",
+                        f"{channel.username} | отключён | {error}",
+                        "channel",
+                        channel.id,
+                        payload={"reason": str(error), "source": "manual_scan"},
+                    )
                 await LogRepository(session).error(
                     "channel_scan_failed",
                     f"Не удалось спарсить {channel.username}: {error}",

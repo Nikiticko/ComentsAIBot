@@ -13,6 +13,15 @@ from comments_ai_bot.core.config import settings
 logger = logging.getLogger(__name__)
 COMMENT_VERIFY_ATTEMPTS = 3
 COMMENT_VERIFY_DELAY_SECONDS = 2
+MISSING_USERNAME_MARKERS = (
+    "no user has",
+    "as username",
+)
+
+
+def is_missing_username_error(error: Exception) -> bool:
+    message = str(error).casefold()
+    return all(marker in message for marker in MISSING_USERNAME_MARKERS)
 
 
 @dataclass(frozen=True)

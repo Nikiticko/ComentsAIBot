@@ -27,7 +27,11 @@ from comments_ai_bot.db.repositories import (
 from comments_ai_bot.db.session import async_session_factory
 from comments_ai_bot.filtering.validation import PostValidator
 from comments_ai_bot.monitoring.manual_scan import POST_SCAN_HOURS, POST_SCAN_LIMIT
-from comments_ai_bot.telegram_client.client import CommentAvailability, TelegramAccountClient
+from comments_ai_bot.telegram_client.client import (
+    CommentAvailability,
+    TelegramAccountClient,
+    is_missing_username_error,
+)
 
 SEND_DELAY_RANGE_SECONDS = (30, 60)
 CHANNEL_COOLDOWNS_KEY = "test_comment_channel_cooldowns"
@@ -236,6 +240,13 @@ class TestCommentSender:
         except ValueError as error:
             result.comments_skipped += 1
             result.items.append(TestCommentItem(channel.username, "skipped", str(error)))
+            if is_missing_username_error(error):
+                await self._disable_channel(
+                    channel.id,
+                    channel.username,
+                    str(error),
+                    source="test_comments",
+                )
             await self._write_log(
                 LogLevel.WARNING,
                 "test_comment_channel_skipped",
@@ -332,9 +343,12 @@ class TestCommentSender:
                 await self._write_log(
                     LogLevel.WARNING,
                     "ai_post_rejected",
-                    (
-                        "ИИ отклонил пост перед комментарием: "
-                        f"{post_url}"
+                    self._readable_ai_message(
+                        channel.username,
+                        post_url,
+                        validation.topic or validation.matched_topic,
+                        None,
+                        False,
                     ),
                     "post",
                     db_post_id,
@@ -365,9 +379,13 @@ class TestCommentSender:
             await self._write_log(
                 LogLevel.INFO if comment_validation["allowed"] else LogLevel.WARNING,
                 "ai_comment_generated",
-                "ИИ сгенерировал комментарий."
-                if comment_validation["allowed"]
-                else "ИИ отклонил сгенерированный комментарий.",
+                self._readable_ai_message(
+                    channel.username,
+                    post_url,
+                    validation.topic,
+                    comment_text,
+                    bool(comment_validation["allowed"]),
+                ),
                 "post",
                 db_post_id,
                 payload={
@@ -475,7 +493,13 @@ class TestCommentSender:
         await self._write_log(
             LogLevel.INFO,
             "test_comment_sent",
-            f"ИИ-комментарий отправлен в {post_url}",
+            self._readable_ai_message(
+                channel.username,
+                post_url,
+                validation.topic,
+                comment_text,
+                bool(comment_validation["allowed"]),
+            ),
             "post",
             db_post_id,
             payload={
@@ -571,6 +595,25 @@ class TestCommentSender:
             )
             await session.commit()
 
+    async def _disable_channel(
+        self,
+        channel_id: int,
+        channel_username: str,
+        reason: str,
+        *,
+        source: str,
+    ) -> None:
+        async with async_session_factory() as session:
+            await ChannelRepository(session).disable(channel_id)
+            await LogRepository(session).warning(
+                "channel_auto_disabled",
+                f"{channel_username} | отключён | {reason}",
+                "channel",
+                channel_id,
+                payload={"reason": reason, "source": source},
+            )
+            await session.commit()
+
     def _get_active_cooldown_reason(
         self,
         cooldowns: dict,
@@ -594,6 +637,19 @@ class TestCommentSender:
 
         reason = item.get("reason") or item.get("reason_code") or "channel cooldown"
         return f"{reason}; пауза до {until:%Y-%m-%d %H:%M}"
+
+    def _readable_ai_message(
+        self,
+        channel_username: str,
+        post_url: str,
+        topic: str | None,
+        comment: str | None,
+        allowed: bool,
+    ) -> str:
+        return (
+            f"{channel_username} | {post_url} | тема: {topic or '-'} | "
+            f"комментарий: {comment or '-'} | allowed: {'да' if allowed else 'нет'}"
+        )
 
     async def _check_comments(
         self,

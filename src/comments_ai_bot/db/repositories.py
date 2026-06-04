@@ -55,6 +55,14 @@ class ChannelRepository:
         await self.session.flush()
         return channel
 
+    async def disable(self, channel_id: int) -> Channel | None:
+        channel = await self.session.get(Channel, channel_id)
+        if channel is None:
+            return None
+        channel.is_active = False
+        await self.session.flush()
+        return channel
+
     async def delete(self, channel_id: int) -> bool:
         channel = await self.session.get(Channel, channel_id)
         if channel is None:

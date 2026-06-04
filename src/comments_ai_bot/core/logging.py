@@ -8,6 +8,14 @@ LOG_DIR = Path("logs")
 LOG_FILE = LOG_DIR / "app.log"
 LOG_FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+NOISY_LOGGERS = (
+    "aiogram.event",
+    "httpx",
+    "httpcore",
+    "telethon",
+    "telethon.network",
+    "telethon.network.mtprotosender",
+)
 
 
 def setup_logging() -> None:
@@ -42,5 +50,8 @@ def setup_logging() -> None:
         file_handler.setFormatter(formatter)
         file_handler.setLevel(level)
         root_logger.addHandler(file_handler)
+
+    for logger_name in NOISY_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
 
     logging.captureWarnings(True)
