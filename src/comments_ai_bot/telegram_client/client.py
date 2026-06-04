@@ -52,6 +52,7 @@ class TelegramAccountClient:
             str(session_path),
             settings.telegram_api_id,
             settings.telegram_api_hash,
+            proxy=settings.telegram_proxy,
         )
 
     async def __aenter__(self) -> "TelegramAccountClient":

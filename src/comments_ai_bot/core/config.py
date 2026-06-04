@@ -1,4 +1,5 @@
 from functools import lru_cache
+from urllib.parse import urlparse, unquote
 
 from dotenv import load_dotenv
 
@@ -36,6 +37,39 @@ def _getenv_bool(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _getenv_telegram_proxy(name: str) -> tuple | None:
+    value = (_getenv(name) or "").strip()
+    if not value:
+        return None
+
+    import socks
+
+    parsed = urlparse(value)
+    proxy_types = {
+        "socks5": socks.SOCKS5,
+        "socks4": socks.SOCKS4,
+        "http": socks.HTTP,
+    }
+    proxy_type = proxy_types.get(parsed.scheme.lower())
+    if proxy_type is None:
+        raise RuntimeError(
+            f"{name} must use socks5://, socks4:// or http:// scheme"
+        )
+    if not parsed.hostname or not parsed.port:
+        raise RuntimeError(f"{name} must include host and port")
+
+    username = unquote(parsed.username) if parsed.username else None
+    password = unquote(parsed.password) if parsed.password else None
+    return (
+        proxy_type,
+        parsed.hostname,
+        parsed.port,
+        True,
+        username,
+        password,
+    )
 
 
 class Settings:
@@ -154,6 +188,10 @@ class Settings:
     @property
     def telegram_session_name(self) -> str:
         return _getenv("TELEGRAM_SESSION_NAME", "comments_ai_bot") or "comments_ai_bot"
+
+    @property
+    def telegram_proxy(self) -> tuple | None:
+        return _getenv_telegram_proxy("TELEGRAM_PROXY_URL")
 
     @property
     def app_env(self) -> AppEnv:

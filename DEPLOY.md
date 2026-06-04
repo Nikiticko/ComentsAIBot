@@ -61,6 +61,7 @@ OPENAI_MODEL=gpt-4o-mini
 TELEGRAM_API_ID=...
 TELEGRAM_API_HASH=...
 TELEGRAM_SESSION_NAME=comments_ai_bot
+# TELEGRAM_PROXY_URL=socks5://user:password@host:port
 LOG_LEVEL=INFO
 ```
 
@@ -81,6 +82,29 @@ python scripts/auth_telegram.py
 ```
 
 Сессия сохранится в `data/`. Дополнительные аккаунты можно добавлять через кнопку `Аккаунты TG`.
+
+Если авторизация падает с ошибкой `Connection to Telegram failed`, значит VPS не может
+подключиться к Telegram напрямую. Тогда добавь в `.env` прокси:
+
+```env
+TELEGRAM_PROXY_URL=socks5://user:password@host:port
+```
+
+Поддерживаются форматы:
+
+```env
+TELEGRAM_PROXY_URL=socks5://host:port
+TELEGRAM_PROXY_URL=socks5://user:password@host:port
+TELEGRAM_PROXY_URL=http://host:port
+```
+
+После изменения `.env` повтори:
+
+```bash
+source .venv/bin/activate
+pip install -e .
+python scripts/auth_telegram.py
+```
 
 ## 7. Создать systemd-сервис
 

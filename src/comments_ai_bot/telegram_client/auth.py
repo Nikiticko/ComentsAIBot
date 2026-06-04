@@ -65,6 +65,7 @@ async def create_client(session_name: str | None = None) -> TelegramClient:
         str(session_path(session_name)),
         settings.telegram_api_id,
         settings.telegram_api_hash,
+        proxy=settings.telegram_proxy,
     )
     await client.connect()
     return client
@@ -75,6 +76,7 @@ async def create_legacy_client(session_name: str | None = None) -> TelegramClien
         str(legacy_session_path(session_name)),
         settings.telegram_api_id,
         settings.telegram_api_hash,
+        proxy=settings.telegram_proxy,
     )
     await client.connect()
     return client
