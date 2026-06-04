@@ -26,7 +26,7 @@ from comments_ai_bot.admin_bot.keyboards import (
     telegram_account_actions,
     telegram_accounts_menu,
 )
-from comments_ai_bot.ai.topic_test import AiTopicTester
+from comments_ai_bot.ai.topic_test import AiTopicTester, MIN_AI_TEST_TEXT_CHARS
 from comments_ai_bot.admin_bot.states import ChannelStates
 from comments_ai_bot.core.config import settings
 from comments_ai_bot.db.repositories import (
@@ -612,7 +612,10 @@ class AiTopicTestReporter:
         self.message = message
 
     async def send(self) -> None:
-        await self.message.answer("Ищу случайный пост с открытыми комментариями и анализирую тему.")
+        await self.message.answer(
+            "Ищу случайный пост с открытыми комментариями и текстом от "
+            f"{MIN_AI_TEST_TEXT_CHARS} символов."
+        )
 
         try:
             result = await AiTopicTester().analyze_random_commentable_post()
@@ -639,6 +642,7 @@ class AiTopicTestReporter:
                     f"Каналов: {result.channels_total}, проверено: {result.channels_attempted}\n"
                     f"Постов проверено: {result.posts_checked}\n"
                     f"Без текста: {result.posts_without_text}\n"
+                    f"Короткий текст до {MIN_AI_TEST_TEXT_CHARS}: {result.posts_too_short}\n"
                     f"Комментарии закрыты: {result.posts_comments_closed}\n"
                     f"Причина: {reason}"
                 ),

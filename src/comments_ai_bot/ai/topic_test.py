@@ -21,6 +21,7 @@ from comments_ai_bot.monitoring.manual_scan import POST_SCAN_HOURS, POST_SCAN_LI
 from comments_ai_bot.telegram_client.client import TelegramAccountClient
 
 MAX_CHANNEL_ATTEMPTS = 20
+MIN_AI_TEST_TEXT_CHARS = 250
 logger = logging.getLogger(__name__)
 
 
@@ -45,6 +46,7 @@ class AiTopicTestResult:
     channels_attempted: int = 0
     posts_checked: int = 0
     posts_without_text: int = 0
+    posts_too_short: int = 0
     posts_comments_closed: int = 0
     errors: list[str] = field(default_factory=list)
 
@@ -98,6 +100,7 @@ class AiTopicTester:
                 "model": settings.openai_model,
                 "post_scan_limit": POST_SCAN_LIMIT,
                 "post_scan_hours": POST_SCAN_HOURS,
+                "min_text_chars": MIN_AI_TEST_TEXT_CHARS,
                 "trigger_words_count": len(settings.post_trigger_words),
                 "forbidden_topics_count": len(settings.forbidden_topics),
             },
@@ -159,17 +162,22 @@ class AiTopicTester:
                 return result
 
         if result.post is None:
-            result.errors.append("Не найден пост с текстом и открытыми комментариями.")
+            result.errors.append(
+                f"Не найден пост с текстом от {MIN_AI_TEST_TEXT_CHARS} символов "
+                "и открытыми комментариями."
+            )
             await self._write_log(
                 LogLevel.WARNING,
                 "ai_topic_test_no_post",
-                "Тест ИИ не нашёл пост с текстом и открытыми комментариями.",
+                "Тест ИИ не нашёл пост с достаточным текстом и открытыми комментариями.",
                 payload={
                     "channels_total": result.channels_total,
                     "channels_attempted": result.channels_attempted,
                     "posts_checked": result.posts_checked,
                     "posts_without_text": result.posts_without_text,
+                    "posts_too_short": result.posts_too_short,
                     "posts_comments_closed": result.posts_comments_closed,
+                    "min_text_chars": MIN_AI_TEST_TEXT_CHARS,
                     "errors": result.errors[:10],
                 },
             )
@@ -193,6 +201,9 @@ class AiTopicTester:
             text = (post.text or "").strip()
             if not text:
                 result.posts_without_text += 1
+                continue
+            if len(text) < MIN_AI_TEST_TEXT_CHARS:
+                result.posts_too_short += 1
                 continue
 
             result.posts_checked += 1
@@ -226,7 +237,9 @@ class AiTopicTester:
                     "channels_attempted": result.channels_attempted,
                     "posts_checked": result.posts_checked,
                     "posts_without_text": result.posts_without_text,
+                    "posts_too_short": result.posts_too_short,
                     "posts_comments_closed": result.posts_comments_closed,
+                    "min_text_chars": MIN_AI_TEST_TEXT_CHARS,
                 },
             )
             return AiTopicTestPost(
