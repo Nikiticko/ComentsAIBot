@@ -32,6 +32,8 @@ class AiTopicTestPost:
     text: str
     views_count: int | None
     validation: PostValidationResult
+    generated_comment: str | None = None
+    comment_validation: dict | None = None
 
     @property
     def url(self) -> str:
@@ -53,7 +55,8 @@ class AiTopicTestResult:
 
 class AiTopicTester:
     def __init__(self, ai_service: AiService | None = None) -> None:
-        self.validator = PostValidator(ai_service)
+        self.ai_service = ai_service or AiService()
+        self.validator = PostValidator(self.ai_service)
 
     async def analyze_random_commentable_post(self) -> AiTopicTestResult:
         result = AiTopicTestResult()
@@ -169,7 +172,10 @@ class AiTopicTester:
             await self._write_log(
                 LogLevel.WARNING,
                 "ai_topic_test_no_post",
-                "Тест ИИ не нашёл пост с достаточным текстом и открытыми комментариями.",
+                (
+                    "Тест ИИ не нашёл пост с достаточным текстом "
+                    "и открытыми комментариями."
+                ),
                 payload={
                     "channels_total": result.channels_total,
                     "channels_attempted": result.channels_attempted,
@@ -213,13 +219,22 @@ class AiTopicTester:
                 continue
 
             validation = await self.validator.validate(text)
+            generated_comment = None
+            comment_validation = None
+            if validation.passed:
+                generated_comment = await self.ai_service.generate_comment(text)
+                comment_validation = await self.ai_service.validate_comment(
+                    text,
+                    generated_comment,
+                )
+
             await self._save_post(channel, post, validation)
             await self._write_log(
-                LogLevel.INFO if validation.passed else LogLevel.WARNING,
+                LogLevel.INFO
+                if validation.passed and (comment_validation or {}).get("allowed", True)
+                else LogLevel.WARNING,
                 "ai_topic_test_completed",
-                "Пост прошёл тестовую валидацию."
-                if validation.passed
-                else f"Пост не прошёл тестовую валидацию: {validation.level}",
+                self._completion_message(validation, comment_validation),
                 "channel",
                 channel.id,
                 payload={
@@ -234,6 +249,8 @@ class AiTopicTester:
                     "ai_used": validation.ai_used,
                     "validation_level": validation.level,
                     "passed": validation.passed,
+                    "generated_comment": generated_comment,
+                    "comment_validation": comment_validation,
                     "channels_attempted": result.channels_attempted,
                     "posts_checked": result.posts_checked,
                     "posts_without_text": result.posts_without_text,
@@ -248,6 +265,8 @@ class AiTopicTester:
                 text=text,
                 views_count=post.views,
                 validation=validation,
+                generated_comment=generated_comment,
+                comment_validation=comment_validation,
             )
 
         return None
@@ -291,3 +310,17 @@ class AiTopicTester:
 
     def _post_url(self, channel_username: str, post_id: int) -> str:
         return f"https://t.me/{channel_username.removeprefix('@')}/{post_id}"
+
+    def _completion_message(
+        self,
+        validation: PostValidationResult,
+        comment_validation: dict | None,
+    ) -> str:
+        if not validation.passed:
+            return f"Пост не прошёл тестовую валидацию: {validation.level}"
+        if comment_validation and not comment_validation.get("allowed"):
+            return "Комментарий сгенерирован, но не прошёл ИИ-проверку."
+        return (
+            "Пост прошёл тестовую валидацию, "
+            "комментарий сгенерирован без публикации."
+        )

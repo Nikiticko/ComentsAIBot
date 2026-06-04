@@ -657,6 +657,14 @@ class AiTopicTestReporter:
         status = "прошёл" if validation.passed else "не прошёл"
         ai_used = "да" if validation.ai_used else "нет"
         text_preview = crop_text(result.post.text, 1_500)
+        comment_validation = result.post.comment_validation or {}
+        comment_status = "-"
+        if comment_validation:
+            comment_status = (
+                "прошёл" if comment_validation.get("allowed") else "не прошёл"
+            )
+        comment_reason = comment_validation.get("reason") or "-"
+        generated_comment = result.post.generated_comment or "-"
         answer = (
             "Тест валидации готов.\n"
             f"Канал: {result.post.channel_username}\n"
@@ -670,6 +678,10 @@ class AiTopicTestReporter:
             f"Тема: {validation.topic or '-'}\n"
             f"Уверенность: {confidence_text}\n"
             f"Причина: {reason}\n\n"
+            "Dry-run комментария:\n"
+            f"{generated_comment}\n"
+            f"Проверка комментария: {comment_status}\n"
+            f"Причина проверки: {comment_reason}\n\n"
             f"Текст поста:\n{text_preview}"
         )
         await self.message.answer(answer, reply_markup=main_menu())

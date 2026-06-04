@@ -111,6 +111,39 @@ class Settings:
         )
 
     @property
+    def ai_comment_prompt(self) -> str:
+        return (
+            _getenv(
+                "AI_COMMENT_PROMPT",
+                (
+                    "Напиши короткий нативный комментарий к Telegram-посту. "
+                    "Комментарий должен звучать как живой человек, "
+                    "без рекламы, без ссылок, без эмодзи, без хэштегов, "
+                    "до 120 символов. Не затрагивай политику, войну, "
+                    "трагедии, медицину и религию."
+                ),
+            )
+            or ""
+        )
+
+    @property
+    def ai_comment_validation_prompt(self) -> str:
+        return (
+            _getenv(
+                "AI_COMMENT_VALIDATION_PROMPT",
+                (
+                    "Проверь, можно ли публиковать комментарий под "
+                    "Telegram-постом. Комментарий должен быть уместным, "
+                    "безопасным, не рекламным, не токсичным и соответствовать "
+                    "контексту поста. Ответь строго JSON: "
+                    '{"allowed":true,"confidence":0.0,'
+                    '"reason":"краткая причина до 12 слов"}'
+                ),
+            )
+            or ""
+        )
+
+    @property
     def telegram_api_id(self) -> int:
         return int(_getenv_required("TELEGRAM_API_ID"))
 

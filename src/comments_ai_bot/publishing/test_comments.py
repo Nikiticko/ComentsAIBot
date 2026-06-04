@@ -5,6 +5,7 @@ import logging
 import random
 from pathlib import Path
 
+from openai import OpenAIError
 from telethon.errors import (
     ChatWriteForbiddenError,
     FloodWaitError,
@@ -12,6 +13,7 @@ from telethon.errors import (
     UserBannedInChannelError,
 )
 
+from comments_ai_bot.ai.service import AiService
 from comments_ai_bot.core.config import settings
 from comments_ai_bot.core.types import CommentStatus, LogLevel, PostStatus
 from comments_ai_bot.db.repositories import (
@@ -23,16 +25,10 @@ from comments_ai_bot.db.repositories import (
     TelegramAccountRepository,
 )
 from comments_ai_bot.db.session import async_session_factory
+from comments_ai_bot.filtering.validation import PostValidator
 from comments_ai_bot.monitoring.manual_scan import POST_SCAN_HOURS, POST_SCAN_LIMIT
 from comments_ai_bot.telegram_client.client import CommentAvailability, TelegramAccountClient
 
-TEST_COMMENT_TEXTS = (
-    "четко",
-    "согласен",
-    "хорошо сказано",
-    "в точку",
-    "интересно",
-)
 SEND_DELAY_RANGE_SECONDS = (30, 60)
 CHANNEL_COOLDOWNS_KEY = "test_comment_channel_cooldowns"
 MIN_POST_AGE_MINUTES = 10
@@ -83,8 +79,11 @@ class TestCommentSender:
         self,
         *,
         send_delay_range_seconds: tuple[int, int] = SEND_DELAY_RANGE_SECONDS,
+        ai_service: AiService | None = None,
     ) -> None:
         self.send_delay_range_seconds = send_delay_range_seconds
+        self.ai_service = ai_service or AiService()
+        self.validator = PostValidator(self.ai_service)
 
     async def send_one_per_channel(self) -> TestCommentResult:
         result = TestCommentResult()
@@ -301,8 +300,110 @@ class TestCommentSender:
             )
             return "skip"
 
+        post_text = (post.text or "").strip()
+        if not post_text:
+            result.comments_skipped += 1
+            result.items.append(TestCommentItem(post_url, "skipped", "Пост без текста"))
+            await self._save_post(
+                channel,
+                post,
+                PostStatus.SKIPPED.value,
+                "Пост без текста",
+            )
+            return "skip"
+
         db_post_id = await self._save_post(channel, post, PostStatus.READY_TO_COMMENT.value)
-        comment_text = random.choice(TEST_COMMENT_TEXTS)
+        try:
+            validation = await self.validator.validate(post_text)
+            await self._save_post(
+                channel,
+                post,
+                (
+                    PostStatus.READY_TO_COMMENT.value
+                    if validation.passed
+                    else PostStatus.FORBIDDEN_TOPIC.value
+                ),
+                None if validation.passed else validation.reason,
+                topic_analysis=validation.to_dict(),
+            )
+            if not validation.passed:
+                result.comments_skipped += 1
+                result.items.append(TestCommentItem(post_url, "skipped", validation.reason))
+                await self._write_log(
+                    LogLevel.WARNING,
+                    "ai_post_rejected",
+                    (
+                        "ИИ отклонил пост перед комментарием: "
+                        f"{post_url}"
+                    ),
+                    "post",
+                    db_post_id,
+                    payload={
+                        "post_url": post_url,
+                        "validation": validation.to_dict(),
+                        "model": settings.openai_model,
+                    },
+                )
+                return "done"
+
+            comment_text = await self.ai_service.generate_comment(post_text)
+            comment_validation = await self.ai_service.validate_comment(post_text, comment_text)
+            await self._save_comment(
+                db_post_id,
+                CommentStatus.GENERATED.value,
+                comment_text,
+                error_message=None
+                if comment_validation["allowed"]
+                else comment_validation.get("reason"),
+            )
+            await self._save_post(
+                channel,
+                post,
+                PostStatus.COMMENT_GENERATED.value,
+                topic_analysis=validation.to_dict(),
+            )
+            await self._write_log(
+                LogLevel.INFO if comment_validation["allowed"] else LogLevel.WARNING,
+                "ai_comment_generated",
+                "ИИ сгенерировал комментарий."
+                if comment_validation["allowed"]
+                else "ИИ отклонил сгенерированный комментарий.",
+                "post",
+                db_post_id,
+                payload={
+                    "post_url": post_url,
+                    "post_topic": validation.topic,
+                    "post_reason": validation.reason,
+                    "post_validation": validation.to_dict(),
+                    "generated_comment": comment_text,
+                    "comment_validation": comment_validation,
+                    "model": settings.openai_model,
+                },
+            )
+        except (OpenAIError, ValueError, RuntimeError) as error:
+            logger.exception("AI comment generation failed for %s/%s", channel.username, post.id)
+            result.comments_failed += 1
+            result.items.append(TestCommentItem(post_url, "failed", f"ИИ: {error}"))
+            await self._write_log(
+                LogLevel.ERROR,
+                "ai_comment_failed",
+                (
+                    "ИИ не сгенерировал комментарий для "
+                    f"{post_url}: {error}"
+                ),
+                "post",
+                db_post_id,
+                payload={"exception_type": type(error).__name__, "model": settings.openai_model},
+            )
+            return "done"
+
+        if not comment_validation["allowed"]:
+            result.comments_skipped += 1
+            result.items.append(
+                TestCommentItem(post_url, "skipped", comment_validation.get("reason"))
+            )
+            return "done"
+
         comment_post_ids = (availability.post_id or post.id,)
 
         try:
@@ -343,7 +444,11 @@ class TestCommentSender:
                 f"{post_url} {classified_error.message}",
                 "post",
                 db_post_id,
-                payload={"error_code": classified_error.code},
+                payload={
+                    "error_code": classified_error.code,
+                    "generated_comment": comment_text,
+                    "comment_validation": comment_validation,
+                },
             )
 
             if classified_error.cooldown_hours is not None:
@@ -370,9 +475,13 @@ class TestCommentSender:
         await self._write_log(
             LogLevel.INFO,
             "test_comment_sent",
-            f"Тестовый комментарий отправлен в {post_url}",
+            f"ИИ-комментарий отправлен в {post_url}",
             "post",
             db_post_id,
+            payload={
+                "generated_comment": comment_text,
+                "comment_validation": comment_validation,
+            },
         )
         return "sent"
 
@@ -506,6 +615,8 @@ class TestCommentSender:
         post,
         status: str,
         skip_reason: str | None = None,
+        *,
+        topic_analysis: dict | None = None,
     ) -> int:
         async with async_session_factory() as session:
             db_post = await PostRepository(session).upsert(
@@ -516,6 +627,8 @@ class TestCommentSender:
                 status=status,
                 skip_reason=skip_reason,
             )
+            if topic_analysis is not None:
+                db_post.topic_analysis = topic_analysis
             await session.commit()
             return db_post.id
 
