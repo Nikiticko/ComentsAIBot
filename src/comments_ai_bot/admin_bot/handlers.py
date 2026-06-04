@@ -14,12 +14,11 @@ from comments_ai_bot.admin_bot.keyboards import (
     CANCEL,
     CHANNEL_LIST,
     LOGS,
+    ONE_AI_SEND,
     READY_TO_COMMENT_POSTS,
-    SETTINGS,
     START_MAILING,
     STOP_MAILING,
     TELEGRAM_AUTH,
-    TEST_COMMENT,
     cancel_keyboard,
     channel_actions,
     main_menu,
@@ -39,7 +38,7 @@ from comments_ai_bot.db.session import async_session_factory
 from comments_ai_bot.discovery.tgstat import TgstatChannelImporter
 from comments_ai_bot.monitoring.manual_scan import ManualPostScanner
 from comments_ai_bot.publishing.mailing import mailing_automation
-from comments_ai_bot.publishing.test_comments import TestCommentSender
+from comments_ai_bot.publishing.ai_comments import AiCommentSender
 from comments_ai_bot.telegram_client.auth import (
     copy_legacy_session_files,
     create_legacy_client,
@@ -54,7 +53,7 @@ logger = logging.getLogger(__name__)
 USERNAME_RE = re.compile(r"^@[A-Za-z0-9_]{5,32}$")
 TELEGRAM_MESSAGE_LIMIT = 3500
 READY_POSTS_LIMIT = 20
-TEST_SENT_LIMIT = 30
+AI_SEND_LIMIT = 30
 
 
 def normalize_channel_username(value: str) -> str | None:
@@ -243,9 +242,9 @@ async def ready_to_comment_posts_from_menu(message: Message) -> None:
     await ReadyPostsReporter(message).send()
 
 
-@router.message(F.text == TEST_COMMENT)
-async def send_test_comment_from_menu(message: Message) -> None:
-    await TestCommentsReporter(message).send()
+@router.message(F.text == ONE_AI_SEND)
+async def send_one_ai_comment_from_menu(message: Message) -> None:
+    await OneAiSendReporter(message).send()
 
 
 @router.message(F.text == AI_TEST)
@@ -578,25 +577,29 @@ class ReadyPostsReporter:
             await self.message.answer(chunk)
 
 
-class TestCommentsReporter:
+class OneAiSendReporter:
     def __init__(self, message: Message) -> None:
         self.message = message
 
     async def send(self) -> None:
-        await self.message.answer("Запускаю тестовую отправку.")
+        await self.message.answer("Запускаю одну ИИ-отправку.")
 
-        result = await TestCommentSender().send_one_per_channel()
+        result = await AiCommentSender().send_one_per_channel()
         sent_items = [item for item in result.items if item.status == "sent"]
         if result.errors and not sent_items:
             await self.message.answer(
-                "Тест не выполнен: " + "; ".join(result.errors),
+                "ИИ-отправка не выполнена: " + "; ".join(result.errors),
                 reply_markup=main_menu(),
             )
             return
 
         summary = (
-            "Тест завершён.\n"
-            f"Проверенных отправок: {len(sent_items)}\n"
+            "ИИ-отправка завершена.\n"
+            f"Отправлено: {len(sent_items)}\n"
+            f"Постов проверено: {result.posts_checked}\n"
+            f"Дошло до ИИ: {result.posts_reached_ai}\n"
+            f"Пропущено: {result.comments_skipped}\n"
+            f"Ошибок: {result.comments_failed}\n"
             f"Аккаунт: {result.account or '-'}"
         )
         if result.stopped_reason:
@@ -606,9 +609,9 @@ class TestCommentsReporter:
         if not sent_items:
             return
 
-        lines = [f"sent: {item.post_url}" for item in sent_items[:TEST_SENT_LIMIT]]
-        if len(sent_items) > TEST_SENT_LIMIT:
-            lines.append(f"...ещё {len(sent_items) - TEST_SENT_LIMIT}")
+        lines = [f"sent: {item.post_url}" for item in sent_items[:AI_SEND_LIMIT]]
+        if len(sent_items) > AI_SEND_LIMIT:
+            lines.append(f"...ещё {len(sent_items) - AI_SEND_LIMIT}")
 
         for chunk in split_messages(lines):
             await self.message.answer(chunk)
@@ -786,13 +789,3 @@ def crop_text(text: str, limit: int) -> str:
         return clean_text
     return f"{clean_text[: limit - 3]}..."
 
-
-@router.message(F.text == SETTINGS)
-async def show_settings_from_menu(message: Message) -> None:
-    await message.answer("Настройки будут добавлены на следующем этапе.", reply_markup=main_menu())
-
-
-@router.callback_query(F.data == "settings:show")
-async def show_settings(callback: CallbackQuery) -> None:
-    await callback.message.answer("Настройки будут добавлены на следующем этапе.", reply_markup=main_menu())
-    await callback.answer()

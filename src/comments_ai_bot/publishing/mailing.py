@@ -15,10 +15,10 @@ from comments_ai_bot.db.repositories import (
     TelegramAccountRepository,
 )
 from comments_ai_bot.db.session import async_session_factory
-from comments_ai_bot.publishing.test_comments import (
+from comments_ai_bot.publishing.ai_comments import (
     AUTOMATION_CHANNEL_ATTEMPT_LIMIT,
-    TestCommentResult,
-    TestCommentSender,
+    AiCommentResult,
+    AiCommentSender,
 )
 
 MAILING_INTERVAL_SECONDS = 30
@@ -158,8 +158,8 @@ class MailingAutomation:
         self,
         account: TelegramAccount,
         channel_ids: set[int],
-    ) -> tuple[TelegramAccount, TestCommentResult]:
-        sender = TestCommentSender(send_delay_range_seconds=(0, 0))
+    ) -> tuple[TelegramAccount, AiCommentResult]:
+        sender = AiCommentSender(send_delay_range_seconds=(0, 0))
         result = await sender.send_one_for_account(
             session_name=account.session_name,
             account_id=account.id,
@@ -170,7 +170,7 @@ class MailingAutomation:
 
     async def _handle_account_results(
         self,
-        account_results: list[tuple[TelegramAccount, TestCommentResult] | BaseException],
+        account_results: list[tuple[TelegramAccount, AiCommentResult] | BaseException],
     ) -> tuple[int, list[str], dict[str, int]]:
         cycle_sent = 0
         sent_report_lines: list[str] = []
@@ -228,7 +228,7 @@ class MailingAutomation:
     def _add_result_stats(
         self,
         cycle_stats: dict[str, int],
-        result: TestCommentResult,
+        result: AiCommentResult,
     ) -> None:
         for key in cycle_stats:
             cycle_stats[key] += int(getattr(result, key))

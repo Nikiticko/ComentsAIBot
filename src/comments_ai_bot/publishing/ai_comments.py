@@ -34,7 +34,7 @@ from comments_ai_bot.telegram_client.client import (
 )
 
 SEND_DELAY_RANGE_SECONDS = (30, 60)
-CHANNEL_COOLDOWNS_KEY = "test_comment_channel_cooldowns"
+AI_COMMENT_CHANNEL_COOLDOWNS_KEY = "ai_comment_channel_cooldowns"
 MIN_POST_AGE_MINUTES = 10
 RECENT_ATTEMPT_HOURS = 24
 AUTOMATION_CHANNEL_ATTEMPT_LIMIT = 20
@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class TestCommentItem:
+class AiCommentItem:
     post_url: str
     status: str
     reason: str | None = None
@@ -64,7 +64,7 @@ class ClassifiedSendError:
 
 
 @dataclass
-class TestCommentResult:
+class AiCommentResult:
     channel_username: str | None = None
     account: str | None = None
     channels_total: int = 0
@@ -83,10 +83,10 @@ class TestCommentResult:
     comments_skipped: int = 0
     stopped_reason: str | None = None
     errors: list[str] = field(default_factory=list)
-    items: list[TestCommentItem] = field(default_factory=list)
+    items: list[AiCommentItem] = field(default_factory=list)
 
 
-class TestCommentSender:
+class AiCommentSender:
     def __init__(
         self,
         *,
@@ -97,13 +97,13 @@ class TestCommentSender:
         self.ai_service = ai_service or AiService()
         self.validator = PostValidator(self.ai_service)
 
-    async def send_one_per_channel(self) -> TestCommentResult:
-        result = TestCommentResult()
+    async def send_one_per_channel(self) -> AiCommentResult:
+        result = AiCommentResult()
 
         async with async_session_factory() as session:
             channels = await ChannelRepository(session).list_active()
             accounts = await TelegramAccountRepository(session).list_active()
-            cooldowns = await SettingRepository(session).get_value(CHANNEL_COOLDOWNS_KEY)
+            cooldowns = await SettingRepository(session).get_value(AI_COMMENT_CHANNEL_COOLDOWNS_KEY)
             result.channels_total = len(channels)
 
         if not channels:
@@ -128,7 +128,7 @@ class TestCommentSender:
                 if cooldown_reason:
                     result.comments_skipped += 1
                     result.items.append(
-                        TestCommentItem(channel.username, "cooldown", cooldown_reason)
+                        AiCommentItem(channel.username, "cooldown", cooldown_reason)
                     )
                     continue
 
@@ -149,12 +149,12 @@ class TestCommentSender:
                 if not should_continue:
                     break
         except (RPCError, ValueError, RuntimeError) as error:
-            logger.exception("Test comment sending failed")
+            logger.exception("AI comment sending failed")
             result.errors.append(str(error))
-            message = f"Тестовая отправка не выполнена: {error}"
+            message = f"ИИ-отправка не выполнена: {error}"
             await self._write_log(
                 LogLevel.ERROR,
-                "test_comments_failed",
+                "ai_comments_failed",
                 message,
             )
 
@@ -168,13 +168,13 @@ class TestCommentSender:
         excluded_channel_ids: set[int] | None = None,
         candidate_channel_ids: set[int] | None = None,
         max_channels_attempted: int = AUTOMATION_CHANNEL_ATTEMPT_LIMIT,
-    ) -> TestCommentResult:
-        result = TestCommentResult(account=session_name or settings.telegram_session_name)
+    ) -> AiCommentResult:
+        result = AiCommentResult(account=session_name or settings.telegram_session_name)
         excluded_channel_ids = excluded_channel_ids or set()
 
         async with async_session_factory() as session:
             channels = await ChannelRepository(session).list_active()
-            cooldowns = await SettingRepository(session).get_value(CHANNEL_COOLDOWNS_KEY)
+            cooldowns = await SettingRepository(session).get_value(AI_COMMENT_CHANNEL_COOLDOWNS_KEY)
             result.channels_total = len(channels)
 
         channels = [channel for channel in channels if channel.id not in excluded_channel_ids]
@@ -203,7 +203,7 @@ class TestCommentSender:
                     if cooldown_reason:
                         result.comments_skipped += 1
                         result.items.append(
-                            TestCommentItem(channel.username, "cooldown", cooldown_reason)
+                            AiCommentItem(channel.username, "cooldown", cooldown_reason)
                         )
                         continue
 
@@ -223,11 +223,11 @@ class TestCommentSender:
                     await TelegramAccountRepository(session).mark_used(account_id)
                     await session.commit()
         except (RPCError, ValueError, RuntimeError) as error:
-            logger.exception("Automated comment sending failed")
+            logger.exception("Automated AI comment sending failed")
             result.errors.append(str(error))
             await self._write_log(
                 LogLevel.ERROR,
-                "automated_comments_failed",
+                "ai_comments_automated_failed",
                 f"Авторассылка не выполнена для {result.account}: {error}",
             )
 
@@ -237,7 +237,7 @@ class TestCommentSender:
         self,
         channel,
         telegram: TelegramAccountClient,
-        result: TestCommentResult,
+        result: AiCommentResult,
     ) -> bool:
         try:
             posts = await telegram.fetch_recent_posts(
@@ -247,18 +247,18 @@ class TestCommentSender:
             )
         except ValueError as error:
             result.comments_skipped += 1
-            result.items.append(TestCommentItem(channel.username, "skipped", str(error)))
+            result.items.append(AiCommentItem(channel.username, "skipped", str(error)))
             if is_missing_username_error(error):
                 result.broken_channels += 1
                 await self._disable_channel(
                     channel.id,
                     channel.username,
                     str(error),
-                    source="test_comments",
+                    source="ai_comments",
                 )
             await self._write_log(
                 LogLevel.WARNING,
-                "test_comment_channel_skipped",
+                "ai_comment_channel_skipped",
                 f"Канал {channel.username} пропущен: {error}",
                 "channel",
                 channel.id,
@@ -274,7 +274,7 @@ class TestCommentSender:
             if post.id in attempted_post_ids:
                 result.comments_skipped += 1
                 result.items.append(
-                    TestCommentItem(
+                    AiCommentItem(
                         self._post_url(channel.username, post.id),
                         "skipped",
                         "Пост уже проверялся за последние 24 часа",
@@ -291,7 +291,7 @@ class TestCommentSender:
                 return False
 
         result.items.append(
-            TestCommentItem(
+            AiCommentItem(
                 channel.username,
                 "skipped",
                 "Нет доступного поста для комментария",
@@ -304,14 +304,14 @@ class TestCommentSender:
         channel,
         post,
         telegram: TelegramAccountClient,
-        result: TestCommentResult,
+        result: AiCommentResult,
     ) -> str:
         post_url = self._post_url(channel.username, post.id)
         post_text = (post.text or "").strip()
         if not post_text:
             result.posts_without_text += 1
             result.comments_skipped += 1
-            result.items.append(TestCommentItem(post_url, "skipped", "Пост без текста"))
+            result.items.append(AiCommentItem(post_url, "skipped", "Пост без текста"))
             await self._save_post(
                 channel,
                 post,
@@ -323,7 +323,7 @@ class TestCommentSender:
             result.posts_too_short += 1
             result.comments_skipped += 1
             reason = f"Текст короче {MIN_AI_CONTEXT_TEXT_CHARS} символов"
-            result.items.append(TestCommentItem(post_url, "skipped", reason))
+            result.items.append(AiCommentItem(post_url, "skipped", reason))
             await self._save_post(
                 channel,
                 post,
@@ -338,7 +338,7 @@ class TestCommentSender:
         if not availability.available:
             result.posts_comments_closed += 1
             result.comments_skipped += 1
-            result.items.append(TestCommentItem(post_url, "skipped", availability.reason))
+            result.items.append(AiCommentItem(post_url, "skipped", availability.reason))
             await self._save_post(
                 channel,
                 post,
@@ -365,7 +365,7 @@ class TestCommentSender:
             if not validation.passed:
                 result.ai_rejected_posts += 1
                 result.comments_skipped += 1
-                result.items.append(TestCommentItem(post_url, "skipped", validation.reason))
+                result.items.append(AiCommentItem(post_url, "skipped", validation.reason))
                 await self._write_log(
                     LogLevel.WARNING,
                     "ai_post_rejected",
@@ -427,7 +427,7 @@ class TestCommentSender:
         except (OpenAIError, ValueError, RuntimeError) as error:
             logger.exception("AI comment generation failed for %s/%s", channel.username, post.id)
             result.comments_failed += 1
-            result.items.append(TestCommentItem(post_url, "failed", f"ИИ: {error}"))
+            result.items.append(AiCommentItem(post_url, "failed", f"ИИ: {error}"))
             await self._write_log(
                 LogLevel.ERROR,
                 "ai_comment_failed",
@@ -445,7 +445,7 @@ class TestCommentSender:
             result.ai_rejected_comments += 1
             result.comments_skipped += 1
             result.items.append(
-                TestCommentItem(post_url, "skipped", comment_validation.get("reason"))
+                AiCommentItem(post_url, "skipped", comment_validation.get("reason"))
             )
             return "done"
 
@@ -469,13 +469,13 @@ class TestCommentSender:
         ) as error:
             classified_error = self._classify_send_error(error)
             logger.warning(
-                "Failed to send test comment to %s/%s: %s",
+                "Failed to send AI comment to %s/%s: %s",
                 channel.username,
                 post.id,
                 classified_error.message,
             )
             result.comments_failed += 1
-            result.items.append(TestCommentItem(post_url, "failed", classified_error.message))
+            result.items.append(AiCommentItem(post_url, "failed", classified_error.message))
             await self._save_comment(
                 db_post_id,
                 CommentStatus.FAILED.value,
@@ -484,8 +484,8 @@ class TestCommentSender:
             )
             await self._write_log(
                 LogLevel.ERROR,
-                "test_comment_failed",
-                "Не удалось отправить тестовый комментарий: "
+                "ai_comment_publish_failed",
+                "Не удалось отправить ИИ-комментарий: "
                 f"{post_url} {classified_error.message}",
                 "post",
                 db_post_id,
@@ -510,7 +510,7 @@ class TestCommentSender:
             return "done"
 
         result.comments_sent += 1
-        result.items.append(TestCommentItem(post_url, "sent"))
+        result.items.append(AiCommentItem(post_url, "sent"))
         await self._save_comment(
             db_post_id,
             CommentStatus.PUBLISHED.value,
@@ -519,7 +519,7 @@ class TestCommentSender:
         )
         await self._write_log(
             LogLevel.INFO,
-            "test_comment_sent",
+            "ai_comment_sent",
             self._readable_ai_message(
                 channel.username,
                 post_url,
@@ -554,7 +554,7 @@ class TestCommentSender:
         delay = random.randint(*self.send_delay_range_seconds)
         if delay <= 0:
             return
-        logger.info("Waiting %s seconds before test comment", delay)
+        logger.info("Waiting %s seconds before AI comment", delay)
         await asyncio.sleep(delay)
 
     def _classify_send_error(self, error: Exception) -> ClassifiedSendError:
@@ -605,13 +605,13 @@ class TestCommentSender:
         until = datetime.now(timezone.utc) + timedelta(hours=hours)
         async with async_session_factory() as session:
             repo = SettingRepository(session)
-            cooldowns = await repo.get_value(CHANNEL_COOLDOWNS_KEY)
+            cooldowns = await repo.get_value(AI_COMMENT_CHANNEL_COOLDOWNS_KEY)
             cooldowns[channel_username] = {
                 "until": until.isoformat(),
                 "reason_code": reason_code,
                 "reason": reason,
             }
-            await repo.set_value(CHANNEL_COOLDOWNS_KEY, cooldowns)
+            await repo.set_value(AI_COMMENT_CHANNEL_COOLDOWNS_KEY, cooldowns)
             await LogRepository(session).warning(
                 "channel_cooldown_set",
                 "Канал "

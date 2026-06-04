@@ -5,13 +5,12 @@ ADD_CHANNEL = "Добавить канал"
 AUTO_ADD_CHANNELS = "Авто каналы TGStat"
 CHANNEL_LIST = "Список каналов"
 READY_TO_COMMENT_POSTS = "Ready 20к+"
-TEST_COMMENT = "Тест коммент"
+ONE_AI_SEND = "Одна ИИ-отправка"
 AI_TEST = "Тест ИИ"
 START_MAILING = "Начать рассылку"
 STOP_MAILING = "Остановить рассылку"
 TELEGRAM_AUTH = "Аккаунты TG"
 LOGS = "Логи"
-SETTINGS = "Настройки"
 CANCEL = "Отмена"
 
 
@@ -20,11 +19,10 @@ def main_menu() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text=ADD_CHANNEL), KeyboardButton(text=CHANNEL_LIST)],
             [KeyboardButton(text=AUTO_ADD_CHANNELS)],
-            [KeyboardButton(text=READY_TO_COMMENT_POSTS), KeyboardButton(text=TEST_COMMENT)],
+            [KeyboardButton(text=READY_TO_COMMENT_POSTS), KeyboardButton(text=ONE_AI_SEND)],
             [KeyboardButton(text=AI_TEST)],
             [KeyboardButton(text=START_MAILING), KeyboardButton(text=STOP_MAILING)],
             [KeyboardButton(text=TELEGRAM_AUTH), KeyboardButton(text=LOGS)],
-            [KeyboardButton(text=SETTINGS)],
         ],
         resize_keyboard=True,
         input_field_placeholder="Выбери действие",
