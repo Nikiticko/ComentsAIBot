@@ -7,7 +7,15 @@ import shutil
 
 import qrcode
 from telethon import TelegramClient
-from telethon.errors import PasswordHashInvalidError, SessionPasswordNeededError
+from telethon.errors import (
+    FloodWaitError,
+    PasswordHashInvalidError,
+    PhoneCodeExpiredError,
+    PhoneCodeInvalidError,
+    PhoneNumberInvalidError,
+    SendCodeUnavailableError,
+    SessionPasswordNeededError,
+)
 
 from comments_ai_bot.core.config import settings
 
@@ -19,6 +27,7 @@ class TelegramAuthResult:
     ok: bool
     message: str
     needs_password: bool = False
+    needs_code: bool = False
 
 
 def session_path(session_name: str | None = None) -> Path:
@@ -115,6 +124,84 @@ async def start_qr_login(session_name: str | None = None) -> tuple[TelegramClien
     return client, qr_login, build_qr_png(qr_login.url)
 
 
+async def start_phone_login(
+    phone: str,
+    session_name: str | None = None,
+) -> tuple[TelegramClient | None, TelegramAuthResult]:
+    if ":" in phone:
+        return None, TelegramAuthResult(
+            False,
+            "Похоже, введён bot token. Нужен номер обычного Telegram-аккаунта.",
+        )
+
+    client = await create_client(session_name)
+    try:
+        if await client.is_user_authorized():
+            me = await client.get_me()
+            if me.bot:
+                await client.disconnect()
+                remove_session_files(session_name)
+                client = await create_client(session_name)
+            else:
+                await client.disconnect()
+                return None, TelegramAuthResult(
+                    False,
+                    f"Telegram-аккаунт уже авторизован: {me.username or me.id}",
+                )
+
+        await client.send_code_request(phone)
+    except PhoneNumberInvalidError:
+        await client.disconnect()
+        return None, TelegramAuthResult(
+            False,
+            "Telegram не принял номер. Проверь формат, например +380XXXXXXXXX.",
+        )
+    except SendCodeUnavailableError:
+        await client.disconnect()
+        return None, TelegramAuthResult(
+            False,
+            "Telegram сейчас не даёт запросить код для этого номера. Попробуй позже.",
+        )
+    except FloodWaitError as error:
+        await client.disconnect()
+        return None, TelegramAuthResult(
+            False,
+            f"Telegram ограничил запрос кода. Подожди {error.seconds} секунд.",
+        )
+
+    return client, TelegramAuthResult(
+        True,
+        "Код запрошен. Отправь код из Telegram одним сообщением.",
+    )
+
+
+async def finish_phone_code_login(
+    client: TelegramClient,
+    phone: str,
+    code: str,
+    *,
+    session_name: str | None = None,
+) -> TelegramAuthResult:
+    try:
+        await client.sign_in(phone=phone, code=code)
+    except SessionPasswordNeededError:
+        return TelegramAuthResult(
+            False,
+            "На аккаунте включён 2FA-пароль. Отправь пароль Telegram одним сообщением.",
+            needs_password=True,
+        )
+    except PhoneCodeInvalidError:
+        return TelegramAuthResult(
+            False,
+            "Неверный код. Отправь правильный код или нажми Отмена.",
+            needs_code=True,
+        )
+    except PhoneCodeExpiredError:
+        return TelegramAuthResult(False, "Код истёк. Нажми Отмена и начни авторизацию снова.")
+
+    return await validate_authorized_user(client, session_name=session_name)
+
+
 async def wait_qr_login(
     client: TelegramClient,
     qr_login: object,
@@ -136,13 +223,8 @@ async def wait_qr_login(
         except asyncio.TimeoutError:
             return TelegramAuthResult(False, "Время ожидания QR-кода истекло. Нажми кнопку авторизации ещё раз.")
 
-        me = await client.get_me()
-        if me.bot:
-            remove_session_files(session_name)
-            return TelegramAuthResult(False, "Авторизован бот, а нужен обычный Telegram-аккаунт.")
-
         logger.info("Telegram user authorized by QR")
-        return TelegramAuthResult(True, f"Telegram-аккаунт авторизован: {me.username or me.id}")
+        return await validate_authorized_user(client, session_name=session_name)
     finally:
         if should_disconnect:
             await client.disconnect()
@@ -163,10 +245,20 @@ async def finish_password_login(
             needs_password=True,
         )
 
+    result = await validate_authorized_user(client, session_name=session_name)
+    if result.ok:
+        logger.info("Telegram user authorized with 2FA password")
+    return result
+
+
+async def validate_authorized_user(
+    client: TelegramClient,
+    *,
+    session_name: str | None = None,
+) -> TelegramAuthResult:
     me = await client.get_me()
     if me.bot:
         remove_session_files(session_name)
         return TelegramAuthResult(False, "Авторизован бот, а нужен обычный Telegram-аккаунт.")
 
-    logger.info("Telegram user authorized by QR and 2FA password")
     return TelegramAuthResult(True, f"Telegram-аккаунт авторизован: {me.username or me.id}")

@@ -60,14 +60,30 @@ def channel_actions(channel_id: int, is_active: bool) -> InlineKeyboardMarkup:
 def telegram_accounts_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Добавить аккаунт", callback_data="tg_account:add")],
+            [
+                InlineKeyboardButton(
+                    text="Добавить через QR",
+                    callback_data="tg_account:add_qr",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Добавить по номеру",
+                    callback_data="tg_account:add_phone",
+                )
+            ],
             [InlineKeyboardButton(text="Подхватить текущую сессию", callback_data="tg_account:import_legacy")],
         ]
     )
 
 
-def telegram_account_actions(account_id: int, is_active: bool) -> InlineKeyboardMarkup:
+def telegram_account_actions(
+    account_id: int,
+    is_active: bool,
+    is_mailing_enabled: bool,
+) -> InlineKeyboardMarkup:
     toggle_text = "Выключить" if is_active else "Включить"
+    mailing_text = "Убрать из рассылки" if is_mailing_enabled else "Добавить в рассылку"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -79,6 +95,12 @@ def telegram_account_actions(account_id: int, is_active: bool) -> InlineKeyboard
                     text="Удалить",
                     callback_data=f"tg_account:delete:{account_id}",
                 ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=mailing_text,
+                    callback_data=f"tg_account:toggle_mailing:{account_id}",
+                )
             ],
         ]
     )

@@ -4,6 +4,7 @@ from typing import Any
 from sqlalchemy import distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from comments_ai_bot.core.config import settings
 from comments_ai_bot.core.types import CommentStatus, LogLevel
 from comments_ai_bot.db.models import Channel, Comment, Log, Post, Setting, TelegramAccount
 
@@ -156,6 +157,7 @@ class TelegramAccountRepository:
         username: str | None,
         first_name: str | None,
         phone: str | None,
+        is_mailing_enabled: bool = True,
     ) -> TelegramAccount | None:
         account = await self.get(account_id)
         if account is None:
@@ -166,6 +168,7 @@ class TelegramAccountRepository:
         account.first_name = first_name
         account.phone = phone
         account.is_active = True
+        account.is_mailing_enabled = is_mailing_enabled
         account.status = "active"
         account.last_error = None
         account.cooldown_until = None
@@ -183,6 +186,7 @@ class TelegramAccountRepository:
         username: str | None,
         first_name: str | None,
         phone: str | None,
+        is_mailing_enabled: bool = True,
     ) -> TelegramAccount:
         account = await self.get_by_session_name(session_name)
         if account is None and telegram_user_id:
@@ -202,6 +206,7 @@ class TelegramAccountRepository:
         account.first_name = first_name
         account.phone = phone
         account.is_active = True
+        account.is_mailing_enabled = is_mailing_enabled
         account.status = "active"
         account.last_error = None
         account.cooldown_until = None
@@ -256,7 +261,9 @@ class TelegramAccountRepository:
             select(TelegramAccount)
             .where(
                 TelegramAccount.is_active.is_(True),
+                TelegramAccount.is_mailing_enabled.is_(True),
                 TelegramAccount.status == "active",
+                self._not_admin_account_filter(),
                 self._available_cooldown_filter(now),
             )
             .order_by(TelegramAccount.last_used_at.is_not(None), TelegramAccount.last_used_at, TelegramAccount.id)
@@ -270,7 +277,9 @@ class TelegramAccountRepository:
             select(TelegramAccount)
             .where(
                 TelegramAccount.is_active.is_(True),
+                TelegramAccount.is_mailing_enabled.is_(True),
                 TelegramAccount.status == "active",
+                self._not_admin_account_filter(),
                 self._available_cooldown_filter(now),
             )
             .order_by(TelegramAccount.last_used_at.is_not(None), TelegramAccount.last_used_at, TelegramAccount.id)
@@ -284,7 +293,9 @@ class TelegramAccountRepository:
             select(TelegramAccount)
             .where(
                 TelegramAccount.is_active.is_(True),
+                TelegramAccount.is_mailing_enabled.is_(True),
                 TelegramAccount.status == "active",
+                self._not_admin_account_filter(),
                 self._available_cooldown_filter(now),
                 or_(
                     TelegramAccount.last_used_at.is_(None),
@@ -313,7 +324,9 @@ class TelegramAccountRepository:
             select(TelegramAccount)
             .where(
                 TelegramAccount.is_active.is_(True),
+                TelegramAccount.is_mailing_enabled.is_(True),
                 TelegramAccount.status == "active",
+                self._not_admin_account_filter(),
                 TelegramAccount.cooldown_until.is_not(None),
                 TelegramAccount.cooldown_until > now,
             )
@@ -332,7 +345,9 @@ class TelegramAccountRepository:
             select(TelegramAccount)
             .where(
                 TelegramAccount.is_active.is_(True),
+                TelegramAccount.is_mailing_enabled.is_(True),
                 TelegramAccount.status == "active",
+                self._not_admin_account_filter(),
                 self._available_cooldown_filter(now),
                 TelegramAccount.last_used_at.is_not(None),
                 TelegramAccount.last_used_at > idle_before,
@@ -390,6 +405,17 @@ class TelegramAccountRepository:
         await self.session.flush()
         return account
 
+    async def toggle_mailing(self, account_id: int) -> TelegramAccount | None:
+        account = await self.get(account_id)
+        if account is None:
+            return None
+        if account.status != "active":
+            return account
+
+        account.is_mailing_enabled = not account.is_mailing_enabled
+        await self.session.flush()
+        return account
+
     async def delete(self, account_id: int) -> TelegramAccount | None:
         account = await self.get(account_id)
         if account is None:
@@ -402,6 +428,16 @@ class TelegramAccountRepository:
         return or_(
             TelegramAccount.cooldown_until.is_(None),
             TelegramAccount.cooldown_until <= now,
+        )
+
+    def _not_admin_account_filter(self):
+        admin_ids = settings.admin_ids
+        if not admin_ids:
+            return True
+
+        return or_(
+            TelegramAccount.telegram_user_id.is_(None),
+            TelegramAccount.telegram_user_id.not_in(admin_ids),
         )
 
     def _as_utc(self, value: datetime | None) -> datetime | None:

@@ -44,9 +44,11 @@ from comments_ai_bot.publishing.ai_comments import AiCommentSender
 from comments_ai_bot.telegram_client.auth import (
     copy_legacy_session_files,
     create_legacy_client,
+    finish_phone_code_login,
     finish_password_login,
     legacy_session_path,
     remove_session_files,
+    start_phone_login,
     start_qr_login,
     wait_qr_login,
 )
@@ -60,13 +62,14 @@ AI_SEND_LIMIT = 30
 
 
 @dataclass
-class PendingTelegram2FA:
+class PendingTelegramAuth:
     account_id: int
     session_name: str
     client: object
+    phone: str | None = None
 
 
-pending_telegram_2fa: dict[int, PendingTelegram2FA] = {}
+pending_telegram_auth: dict[int, PendingTelegramAuth] = {}
 
 
 def normalize_channel_username(value: str) -> str | None:
@@ -81,6 +84,10 @@ def normalize_channel_username(value: str) -> str | None:
     if not USERNAME_RE.fullmatch(username):
         return None
     return username
+
+
+def new_telegram_session_name() -> str:
+    return f"tg_account_{time.time_ns() // 1_000_000}"
 
 
 @router.message(CommandStart())
@@ -321,6 +328,7 @@ async def send_telegram_accounts(message: Message) -> None:
             (
                 f"Legacy: {legacy_info['title']}\n"
                 "Статус: active, активен\n"
+                "Рассылка: нет\n"
                 f"Сессия: {legacy_info['session_name']}\n"
                 "Источник: data/*.session"
             )
@@ -328,10 +336,15 @@ async def send_telegram_accounts(message: Message) -> None:
 
     for account in accounts:
         active = "активен" if account.is_active else "выключен"
+        effective_mailing = is_effective_mailing_account(account)
+        mailing = "да" if effective_mailing else "нет"
+        if account.telegram_user_id in settings.admin_ids:
+            mailing = f"{mailing} (админский)"
         title = account.username or account.first_name or str(account.telegram_user_id or account.id)
         text = (
             f"#{account.id} {title}\n"
             f"Статус: {account.status}, {active}\n"
+            f"Рассылка: {mailing}\n"
             f"Сессия: {account.session_name}"
         )
         cooldown_text = format_account_cooldown(account)
@@ -339,7 +352,14 @@ async def send_telegram_accounts(message: Message) -> None:
             text = f"{text}\n{cooldown_text}"
         if account.last_error and not cooldown_text:
             text = f"{text}\nОшибка: {account.last_error}"
-        await message.answer(text, reply_markup=telegram_account_actions(account.id, account.is_active))
+        await message.answer(
+            text,
+            reply_markup=telegram_account_actions(
+                account.id,
+                account.is_active,
+                effective_mailing,
+            ),
+        )
 
 
 def format_account_cooldown(account) -> str | None:
@@ -367,6 +387,10 @@ def as_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def is_effective_mailing_account(account) -> bool:
+    return account.is_mailing_enabled and account.telegram_user_id not in settings.admin_ids
+
+
 async def get_legacy_account_info(existing_accounts) -> dict | None:
     session_name = settings.telegram_session_name
     if not legacy_session_path(session_name).with_suffix(".session").exists():
@@ -390,17 +414,123 @@ async def get_legacy_account_info(existing_accounts) -> dict | None:
     }
 
 
-@router.callback_query(F.data == "tg_account:add")
+@router.callback_query(F.data == "tg_account:add_qr")
 async def add_telegram_account(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer("Генерирую QR")
     await send_telegram_qr_auth(callback.message, state, callback.from_user.id)
+
+
+@router.callback_query(F.data == "tg_account:add_phone")
+async def ask_telegram_phone(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(TelegramAuthStates.waiting_for_phone)
+    await callback.message.answer(
+        "Отправь номер рассылочного Telegram-аккаунта, например +380XXXXXXXXX.",
+        reply_markup=cancel_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.message(TelegramAuthStates.waiting_for_phone, F.text == CANCEL)
+async def cancel_telegram_phone_input(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("Авторизация Telegram отменена.", reply_markup=main_menu())
+
+
+@router.message(TelegramAuthStates.waiting_for_phone)
+async def start_telegram_phone_auth(message: Message, state: FSMContext) -> None:
+    phone = (message.text or "").strip()
+    session_name = new_telegram_session_name()
+
+    async with async_session_factory() as session:
+        repo = TelegramAccountRepository(session)
+        account = await repo.create_pending(session_name)
+        await session.commit()
+
+    try:
+        client, result = await start_phone_login(phone, session_name)
+    except Exception as error:
+        logger.exception("Failed to start Telegram phone login")
+        result_message = f"Не удалось запросить код Telegram: {error}"
+        remove_session_files(session_name)
+        async with async_session_factory() as session:
+            await TelegramAccountRepository(session).mark_error(account.id, result_message)
+            await session.commit()
+        await state.clear()
+        await message.answer(result_message, reply_markup=main_menu())
+        return
+
+    if client is None:
+        remove_session_files(session_name)
+        async with async_session_factory() as session:
+            await TelegramAccountRepository(session).mark_error(account.id, result.message)
+            await session.commit()
+        await state.clear()
+        await message.answer(result.message, reply_markup=main_menu())
+        return
+
+    old_pending = pending_telegram_auth.pop(message.from_user.id, None)
+    if old_pending is not None:
+        await old_pending.client.disconnect()
+
+    pending_telegram_auth[message.from_user.id] = PendingTelegramAuth(
+        account_id=account.id,
+        session_name=session_name,
+        client=client,
+        phone=phone,
+    )
+    await state.set_state(TelegramAuthStates.waiting_for_phone_code)
+    await message.answer(
+        (
+            f"{result.message}\n"
+            "Код ищи в приложении Telegram на этом аккаунте, не в админ-боте."
+        ),
+        reply_markup=cancel_keyboard(),
+    )
+
+
+@router.message(TelegramAuthStates.waiting_for_phone_code, F.text == CANCEL)
+async def cancel_telegram_phone_code(message: Message, state: FSMContext) -> None:
+    await cancel_pending_telegram_auth(message, state)
+
+
+@router.message(TelegramAuthStates.waiting_for_phone_code)
+async def finish_telegram_phone_code(message: Message, state: FSMContext) -> None:
+    pending = pending_telegram_auth.get(message.from_user.id)
+    if pending is None or pending.phone is None:
+        await state.clear()
+        await message.answer(
+            "Активная авторизация не найдена. Запусти добавление аккаунта снова.",
+            reply_markup=main_menu(),
+        )
+        return
+
+    code = (message.text or "").strip()
+    if not code:
+        await message.answer("Отправь код Telegram или нажми Отмена.", reply_markup=cancel_keyboard())
+        return
+
+    result = await finish_phone_code_login(
+        pending.client,
+        pending.phone,
+        code,
+        session_name=pending.session_name,
+    )
+    if result.needs_password:
+        await state.set_state(TelegramAuthStates.waiting_for_2fa_password)
+        await message.answer(result.message, reply_markup=cancel_keyboard())
+        return
+    if result.needs_code:
+        await message.answer(result.message, reply_markup=cancel_keyboard())
+        return
+
+    await complete_pending_telegram_auth(message, state, pending, result)
 
 
 async def send_telegram_qr_auth(message: Message, state: FSMContext, user_id: int) -> None:
     try:
         async with async_session_factory() as session:
             repo = TelegramAccountRepository(session)
-            session_name = f"tg_account_{int(time.time())}"
+            session_name = new_telegram_session_name()
             account = await repo.create_pending(session_name)
             await session.commit()
 
@@ -422,11 +552,11 @@ async def send_telegram_qr_auth(message: Message, state: FSMContext, user_id: in
 
     result = await wait_qr_login(client, qr_login, session_name=session_name)
     if result.needs_password:
-        old_pending = pending_telegram_2fa.pop(user_id, None)
+        old_pending = pending_telegram_auth.pop(user_id, None)
         if old_pending is not None:
             await old_pending.client.disconnect()
 
-        pending_telegram_2fa[user_id] = PendingTelegram2FA(
+        pending_telegram_auth[user_id] = PendingTelegramAuth(
             account_id=account.id,
             session_name=session_name,
             client=client,
@@ -448,9 +578,14 @@ async def send_telegram_qr_auth(message: Message, state: FSMContext, user_id: in
 
 @router.message(TelegramAuthStates.waiting_for_2fa_password, F.text == CANCEL)
 async def cancel_telegram_2fa(message: Message, state: FSMContext) -> None:
-    pending = pending_telegram_2fa.pop(message.from_user.id, None)
+    await cancel_pending_telegram_auth(message, state)
+
+
+async def cancel_pending_telegram_auth(message: Message, state: FSMContext) -> None:
+    pending = pending_telegram_auth.pop(message.from_user.id, None)
     if pending is not None:
         await pending.client.disconnect()
+        remove_session_files(pending.session_name)
         async with async_session_factory() as session:
             await TelegramAccountRepository(session).mark_error(
                 pending.account_id,
@@ -464,7 +599,7 @@ async def cancel_telegram_2fa(message: Message, state: FSMContext) -> None:
 
 @router.message(TelegramAuthStates.waiting_for_2fa_password)
 async def finish_telegram_2fa(message: Message, state: FSMContext) -> None:
-    pending = pending_telegram_2fa.get(message.from_user.id)
+    pending = pending_telegram_auth.get(message.from_user.id)
     if pending is None:
         await state.clear()
         await message.answer(
@@ -495,7 +630,16 @@ async def finish_telegram_2fa(message: Message, state: FSMContext) -> None:
         await message.answer(result.message, reply_markup=cancel_keyboard())
         return
 
-    pending_telegram_2fa.pop(message.from_user.id, None)
+    await complete_pending_telegram_auth(message, state, pending, result)
+
+
+async def complete_pending_telegram_auth(
+    message: Message,
+    state: FSMContext,
+    pending: PendingTelegramAuth,
+    result,
+) -> None:
+    pending_telegram_auth.pop(message.from_user.id, None)
     try:
         async with async_session_factory() as session:
             repo = TelegramAccountRepository(session)
@@ -510,6 +654,7 @@ async def finish_telegram_2fa(message: Message, state: FSMContext) -> None:
                 )
             else:
                 await repo.mark_error(pending.account_id, result.message)
+                remove_session_files(pending.session_name)
             await session.commit()
     finally:
         await pending.client.disconnect()
@@ -525,9 +670,13 @@ async def save_authorized_telegram_account(
     session_name: str,
     *,
     me: dict | None = None,
+    is_mailing_enabled: bool = True,
 ) -> None:
     if me is None:
         me = await start_authorized_account_probe(session_name)
+
+    if me["id"] in settings.admin_ids:
+        is_mailing_enabled = False
 
     await repo.mark_authorized(
         account_id,
@@ -535,6 +684,7 @@ async def save_authorized_telegram_account(
         username=me["username"],
         first_name=me["first_name"],
         phone=me["phone"],
+        is_mailing_enabled=is_mailing_enabled,
     )
     await LogRepository(session).info(
         "telegram_account_added",
@@ -614,6 +764,7 @@ async def import_legacy_telegram_account(callback: CallbackQuery) -> None:
             username=me["username"],
             first_name=me["first_name"],
             phone=me["phone"],
+            is_mailing_enabled=False,
         )
         await LogRepository(session).info(
             "telegram_legacy_account_imported",
@@ -623,7 +774,9 @@ async def import_legacy_telegram_account(callback: CallbackQuery) -> None:
         )
         await session.commit()
 
-    await callback.message.answer("Текущая Telegram-сессия добавлена в аккаунты.")
+    await callback.message.answer(
+        "Текущая Telegram-сессия добавлена в аккаунты без участия в рассылке."
+    )
     await send_telegram_accounts(callback.message)
     await callback.answer()
 
@@ -643,6 +796,31 @@ async def toggle_telegram_account(callback: CallbackQuery) -> None:
         return
 
     await callback.message.answer("Список аккаунтов обновлён.", reply_markup=main_menu())
+    await send_telegram_accounts(callback.message)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("tg_account:toggle_mailing:"))
+async def toggle_telegram_account_mailing(callback: CallbackQuery) -> None:
+    account_id = int((callback.data or "").split(":")[-1])
+    async with async_session_factory() as session:
+        account = await TelegramAccountRepository(session).toggle_mailing(account_id)
+        await session.commit()
+
+    if account is None:
+        await callback.answer("Аккаунт не найден", show_alert=True)
+        return
+    if account.status != "active":
+        await callback.answer("Можно менять только авторизованный аккаунт", show_alert=True)
+        return
+    if account.telegram_user_id in settings.admin_ids and account.is_mailing_enabled:
+        async with async_session_factory() as session:
+            await TelegramAccountRepository(session).toggle_mailing(account_id)
+            await session.commit()
+        await callback.answer("Админский аккаунт нельзя добавить в рассылку", show_alert=True)
+        return
+
+    await callback.message.answer("Настройки рассылки аккаунта обновлены.", reply_markup=main_menu())
     await send_telegram_accounts(callback.message)
     await callback.answer()
 

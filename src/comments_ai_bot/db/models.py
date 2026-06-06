@@ -42,6 +42,7 @@ class TelegramAccount(Base, TimestampMixin):
     first_name: Mapped[str | None] = mapped_column(String(255))
     phone: Mapped[str | None] = mapped_column(String(64))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_mailing_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="active", index=True)
     last_error: Mapped[str | None] = mapped_column(Text)
     cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
