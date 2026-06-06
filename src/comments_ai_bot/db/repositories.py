@@ -277,6 +277,28 @@ class TelegramAccountRepository:
         )
         return list(result.scalars().all())
 
+    async def list_mailing_ready(self, min_idle_seconds: int) -> list[TelegramAccount]:
+        now = datetime.now(timezone.utc)
+        idle_before = now - timedelta(seconds=min_idle_seconds)
+        result = await self.session.execute(
+            select(TelegramAccount)
+            .where(
+                TelegramAccount.is_active.is_(True),
+                TelegramAccount.status == "active",
+                self._available_cooldown_filter(now),
+                or_(
+                    TelegramAccount.last_used_at.is_(None),
+                    TelegramAccount.last_used_at <= idle_before,
+                ),
+            )
+            .order_by(
+                TelegramAccount.last_used_at.is_not(None),
+                TelegramAccount.last_used_at,
+                TelegramAccount.id,
+            )
+        )
+        return list(result.scalars().all())
+
     async def list_enabled(self) -> list[TelegramAccount]:
         result = await self.session.execute(
             select(TelegramAccount)
@@ -296,6 +318,26 @@ class TelegramAccountRepository:
                 TelegramAccount.cooldown_until > now,
             )
             .order_by(TelegramAccount.cooldown_until, TelegramAccount.id)
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_next_mailing_throttled_account(
+        self,
+        min_idle_seconds: int,
+    ) -> TelegramAccount | None:
+        now = datetime.now(timezone.utc)
+        idle_before = now - timedelta(seconds=min_idle_seconds)
+        result = await self.session.execute(
+            select(TelegramAccount)
+            .where(
+                TelegramAccount.is_active.is_(True),
+                TelegramAccount.status == "active",
+                self._available_cooldown_filter(now),
+                TelegramAccount.last_used_at.is_not(None),
+                TelegramAccount.last_used_at > idle_before,
+            )
+            .order_by(TelegramAccount.last_used_at, TelegramAccount.id)
             .limit(1)
         )
         return result.scalar_one_or_none()

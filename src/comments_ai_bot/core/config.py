@@ -194,6 +194,18 @@ class Settings:
         return _getenv_telegram_proxy("TELEGRAM_PROXY_URL")
 
     @property
+    def mailing_interval_seconds(self) -> int:
+        return int(_getenv("MAILING_INTERVAL_SECONDS", "300") or "300")
+
+    @property
+    def telegram_account_min_idle_seconds(self) -> int:
+        return int(_getenv("TELEGRAM_ACCOUNT_MIN_IDLE_SECONDS", "900") or "900")
+
+    @property
+    def ai_comment_automation_channel_attempt_limit(self) -> int:
+        return int(_getenv("AI_COMMENT_AUTOMATION_CHANNEL_ATTEMPT_LIMIT", "3") or "3")
+
+    @property
     def app_env(self) -> AppEnv:
         return AppEnv(_getenv("APP_ENV", AppEnv.LOCAL.value) or AppEnv.LOCAL.value)
 

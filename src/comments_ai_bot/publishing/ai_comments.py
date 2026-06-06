@@ -37,7 +37,7 @@ SEND_DELAY_RANGE_SECONDS = (30, 60)
 AI_COMMENT_CHANNEL_COOLDOWNS_KEY = "ai_comment_channel_cooldowns"
 MIN_POST_AGE_MINUTES = 10
 RECENT_ATTEMPT_HOURS = 24
-AUTOMATION_CHANNEL_ATTEMPT_LIMIT = 20
+AUTOMATION_CHANNEL_ATTEMPT_LIMIT = settings.ai_comment_automation_channel_attempt_limit
 CHANNEL_COOLDOWN_HOURS = {
     "deleted_after_send": 24,
     "need_join_discussion": 72,

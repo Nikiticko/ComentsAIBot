@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 
+from comments_ai_bot.core.config import settings
 from comments_ai_bot.core.types import LogLevel
 from comments_ai_bot.db.models import Channel, TelegramAccount
 from comments_ai_bot.db.repositories import (
@@ -21,7 +22,8 @@ from comments_ai_bot.publishing.ai_comments import (
     AiCommentSender,
 )
 
-MAILING_INTERVAL_SECONDS = 30
+MAILING_INTERVAL_SECONDS = settings.mailing_interval_seconds
+TELEGRAM_ACCOUNT_MIN_IDLE_SECONDS = settings.telegram_account_min_idle_seconds
 TELEGRAM_MESSAGE_LIMIT = 3500
 try:
     LOCAL_TZ = ZoneInfo("Europe/Kyiv")
@@ -62,31 +64,25 @@ class MailingAutomation:
         await self._write_log(
             LogLevel.INFO,
             "mailing_started",
-            "Авторассылка запущена.",
+            (
+                "Авторассылка запущена. "
+                f"Интервал цикла: {MAILING_INTERVAL_SECONDS} сек, "
+                f"отдых аккаунта: {TELEGRAM_ACCOUNT_MIN_IDLE_SECONDS} сек."
+            ),
         )
 
         try:
             while True:
                 accounts = await self._get_active_accounts()
                 if not accounts:
-                    cooldown_account = await self._get_next_cooldown_account()
-                    if cooldown_account is not None and cooldown_account.cooldown_until is not None:
-                        cooldown_until = self._as_utc(cooldown_account.cooldown_until)
-                        sleep_seconds = self._cooldown_sleep_seconds(cooldown_until)
-                        message = (
-                            "Все активные TG-аккаунты на паузе. "
-                            f"Ближайший доступен: {cooldown_until:%Y-%m-%d %H:%M UTC}. "
-                            f"Причина: {cooldown_account.cooldown_reason or '-'}"
-                        )
-                        await bot.send_message(chat_id, message)
+                    wait_message, sleep_seconds = await self._next_account_wait()
+                    if wait_message is not None:
+                        await bot.send_message(chat_id, wait_message)
                         await self._write_log(
                             LogLevel.WARNING,
-                            "mailing_paused_all_accounts_cooldown",
-                            message,
-                            payload={
-                                "account_id": cooldown_account.id,
-                                "sleep_seconds": sleep_seconds,
-                            },
+                            "mailing_paused_accounts_not_ready",
+                            wait_message,
+                            payload={"sleep_seconds": sleep_seconds},
                         )
                         await asyncio.sleep(sleep_seconds)
                         continue
@@ -149,11 +145,19 @@ class MailingAutomation:
 
     async def _get_active_accounts(self) -> list[TelegramAccount]:
         async with async_session_factory() as session:
-            return await TelegramAccountRepository(session).list_active()
+            return await TelegramAccountRepository(session).list_mailing_ready(
+                TELEGRAM_ACCOUNT_MIN_IDLE_SECONDS,
+            )
 
     async def _get_next_cooldown_account(self) -> TelegramAccount | None:
         async with async_session_factory() as session:
             return await TelegramAccountRepository(session).get_next_cooldown_account()
+
+    async def _get_next_throttled_account(self) -> TelegramAccount | None:
+        async with async_session_factory() as session:
+            return await TelegramAccountRepository(session).get_next_mailing_throttled_account(
+                TELEGRAM_ACCOUNT_MIN_IDLE_SECONDS,
+            )
 
     async def _get_candidate_channels(self, excluded_channel_ids: set[int]) -> list[Channel]:
         async with async_session_factory() as session:
@@ -288,8 +292,45 @@ class MailingAutomation:
     def _account_title(self, account: TelegramAccount) -> str:
         return account.username or account.first_name or account.session_name
 
-    def _cooldown_sleep_seconds(self, cooldown_until: datetime) -> int:
-        seconds = int((cooldown_until - datetime.now(timezone.utc)).total_seconds())
+    async def _next_account_wait(self) -> tuple[str | None, int]:
+        wait_options: list[tuple[datetime, str]] = []
+        cooldown_account = await self._get_next_cooldown_account()
+        if cooldown_account is not None and cooldown_account.cooldown_until is not None:
+            cooldown_until = self._as_utc(cooldown_account.cooldown_until)
+            wait_options.append(
+                (
+                    cooldown_until,
+                    (
+                        "Все активные TG-аккаунты на паузе. "
+                        f"Ближайший доступен: {cooldown_until:%Y-%m-%d %H:%M UTC}. "
+                        f"Причина: {cooldown_account.cooldown_reason or '-'}"
+                    ),
+                )
+            )
+
+        throttled_account = await self._get_next_throttled_account()
+        if throttled_account is not None and throttled_account.last_used_at is not None:
+            ready_at = self._as_utc(throttled_account.last_used_at) + timedelta(
+                seconds=TELEGRAM_ACCOUNT_MIN_IDLE_SECONDS,
+            )
+            wait_options.append(
+                (
+                    ready_at,
+                    (
+                        "Все активные TG-аккаунты отдыхают после прошлого цикла. "
+                        f"Ближайший готов: {ready_at:%Y-%m-%d %H:%M UTC}."
+                    ),
+                )
+            )
+
+        if not wait_options:
+            return None, MAILING_INTERVAL_SECONDS
+
+        ready_at, message = min(wait_options, key=lambda item: item[0])
+        return message, self._sleep_seconds_until(ready_at)
+
+    def _sleep_seconds_until(self, value: datetime) -> int:
+        seconds = int((value - datetime.now(timezone.utc)).total_seconds())
         return max(60, seconds)
 
     def _as_utc(self, value: datetime) -> datetime:
