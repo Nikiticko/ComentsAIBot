@@ -43,7 +43,6 @@ CHANNEL_COOLDOWN_HOURS = {
     "need_join_discussion": 72,
     "write_forbidden": 24,
     "invalid_discussion_post": 6,
-    "flood_wait": 6,
 }
 logger = logging.getLogger(__name__)
 
@@ -81,6 +80,8 @@ class AiCommentResult:
     comments_sent: int = 0
     comments_failed: int = 0
     comments_skipped: int = 0
+    account_cooldown_until: datetime | None = None
+    account_cooldown_reason: str | None = None
     stopped_reason: str | None = None
     errors: list[str] = field(default_factory=list)
     items: list[AiCommentItem] = field(default_factory=list)
@@ -118,6 +119,7 @@ class AiCommentSender:
         random.shuffle(channels)
         account_sessions = [account.session_name for account in accounts] or [None]
         account_ids = {account.session_name: account.id for account in accounts}
+        current_account_id: int | None = None
         result.account = ", ".join(
             session or settings.telegram_session_name for session in account_sessions
         )
@@ -133,10 +135,16 @@ class AiCommentSender:
                     continue
 
                 session_name = account_sessions[index % len(account_sessions)]
+                current_account_id = account_ids.get(session_name)
                 result.channel_username = channel.username
 
                 async with TelegramAccountClient(session_name) as telegram:
-                    should_continue = await self._send_one_to_channel(channel, telegram, result)
+                    should_continue = await self._send_one_to_channel(
+                        channel,
+                        telegram,
+                        result,
+                        account_id=current_account_id,
+                    )
 
                 result.channels_processed += 1
                 if session_name is not None:
@@ -148,6 +156,13 @@ class AiCommentSender:
 
                 if not should_continue:
                     break
+        except FloodWaitError as error:
+            logger.exception("AI comment sending hit Telegram flood wait")
+            await self._handle_account_flood_wait(
+                current_account_id,
+                error,
+                result,
+            )
         except (RPCError, ValueError, RuntimeError) as error:
             logger.exception("AI comment sending failed")
             result.errors.append(str(error))
@@ -210,7 +225,12 @@ class AiCommentSender:
                     sent_before = result.comments_sent
                     result.channel_username = channel.username
                     attempted_channels += 1
-                    should_continue = await self._send_one_to_channel(channel, telegram, result)
+                    should_continue = await self._send_one_to_channel(
+                        channel,
+                        telegram,
+                        result,
+                        account_id=account_id,
+                    )
                     result.channels_processed += 1
 
                     if not should_continue:
@@ -222,6 +242,9 @@ class AiCommentSender:
                 async with async_session_factory() as session:
                     await TelegramAccountRepository(session).mark_used(account_id)
                     await session.commit()
+        except FloodWaitError as error:
+            logger.exception("Automated AI comment sending hit Telegram flood wait")
+            await self._handle_account_flood_wait(account_id, error, result)
         except (RPCError, ValueError, RuntimeError) as error:
             logger.exception("Automated AI comment sending failed")
             result.errors.append(str(error))
@@ -238,6 +261,8 @@ class AiCommentSender:
         channel,
         telegram: TelegramAccountClient,
         result: AiCommentResult,
+        *,
+        account_id: int | None = None,
     ) -> bool:
         try:
             posts = await telegram.fetch_recent_posts(
@@ -245,6 +270,8 @@ class AiCommentSender:
                 limit=POST_SCAN_LIMIT,
                 hours=POST_SCAN_HOURS,
             )
+        except FloodWaitError:
+            raise
         except ValueError as error:
             result.comments_skipped += 1
             result.items.append(AiCommentItem(channel.username, "skipped", str(error)))
@@ -282,7 +309,13 @@ class AiCommentSender:
                 )
                 continue
 
-            send_status = await self._send_to_post(channel, post, telegram, result)
+            send_status = await self._send_to_post(
+                channel,
+                post,
+                telegram,
+                result,
+                account_id=account_id,
+            )
             if send_status == "sent":
                 return True
             if send_status == "done":
@@ -305,6 +338,8 @@ class AiCommentSender:
         post,
         telegram: TelegramAccountClient,
         result: AiCommentResult,
+        *,
+        account_id: int | None = None,
     ) -> str:
         post_url = self._post_url(channel.username, post.id)
         post_text = (post.text or "").strip()
@@ -505,7 +540,10 @@ class AiCommentSender:
                 )
 
             if classified_error.account_level:
-                result.stopped_reason = classified_error.message
+                if isinstance(error, FloodWaitError):
+                    await self._handle_account_flood_wait(account_id, error, result)
+                else:
+                    result.stopped_reason = classified_error.message
                 return "stop"
             return "done"
 
@@ -565,7 +603,6 @@ class AiCommentSender:
             return ClassifiedSendError(
                 "flood_wait",
                 message,
-                cooldown_hours=CHANNEL_COOLDOWN_HOURS["flood_wait"],
                 account_level=True,
             )
         if isinstance(error, (ChatWriteForbiddenError, UserBannedInChannelError)):
@@ -621,6 +658,62 @@ class AiCommentSender:
                 payload={"reason_code": reason_code, "hours": hours},
             )
             await session.commit()
+
+    async def _handle_account_flood_wait(
+        self,
+        account_id: int | None,
+        error: FloodWaitError,
+        result: AiCommentResult,
+    ) -> None:
+        source = self._telegram_error_source(error)
+        seconds = max(0, int(getattr(error, "seconds", 0) or 0))
+        until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+        message = (
+            f"Telegram FloodWait для {result.account or 'аккаунта'}: "
+            f"пауза {seconds} сек. до {until:%Y-%m-%d %H:%M UTC}; source={source}"
+        )
+        result.account_cooldown_until = until
+        result.account_cooldown_reason = message
+        result.stopped_reason = message
+        result.errors.append(message)
+
+        if account_id is None:
+            await self._write_log(
+                LogLevel.WARNING,
+                "telegram_account_flood_wait_no_account_id",
+                message,
+                payload={"source": source, "seconds": seconds},
+            )
+            return
+
+        async with async_session_factory() as session:
+            await TelegramAccountRepository(session).mark_cooldown(
+                account_id,
+                until=until,
+                reason=message,
+                source=source,
+                flood_wait_seconds=seconds,
+            )
+            await LogRepository(session).warning(
+                "telegram_account_cooldown_set",
+                message,
+                "telegram_account",
+                account_id,
+                payload={"source": source, "seconds": seconds, "until": until.isoformat()},
+            )
+            await session.commit()
+
+    def _telegram_error_source(self, error: Exception) -> str:
+        request = getattr(error, "request", None)
+        if request is not None:
+            return type(request).__name__
+
+        message = str(error)
+        marker = "(caused by "
+        if marker in message and message.endswith(")"):
+            return message.rsplit(marker, 1)[-1].removesuffix(")")
+
+        return type(error).__name__
 
     async def _disable_channel(
         self,
@@ -686,6 +779,8 @@ class AiCommentSender:
     ) -> CommentAvailability:
         try:
             return await telegram.can_comment(channel_username, post.id, post.message_ids)
+        except FloodWaitError:
+            raise
         except (RPCError, ValueError, RuntimeError) as error:
             return CommentAvailability(
                 False,

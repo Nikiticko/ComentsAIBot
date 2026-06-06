@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import logging
 import re
 import time
@@ -332,9 +333,37 @@ async def send_telegram_accounts(message: Message) -> None:
             f"Статус: {account.status}, {active}\n"
             f"Сессия: {account.session_name}"
         )
-        if account.last_error:
+        cooldown_text = format_account_cooldown(account)
+        if cooldown_text:
+            text = f"{text}\n{cooldown_text}"
+        if account.last_error and not cooldown_text:
             text = f"{text}\nОшибка: {account.last_error}"
         await message.answer(text, reply_markup=telegram_account_actions(account.id, account.is_active))
+
+
+def format_account_cooldown(account) -> str | None:
+    if account.cooldown_until is None:
+        return None
+
+    cooldown_until = as_utc(account.cooldown_until)
+    now = datetime.now(timezone.utc)
+    if cooldown_until <= now:
+        return None
+
+    seconds_left = int((cooldown_until - now).total_seconds())
+    hours_left = max(1, seconds_left // 3600)
+    reason = account.cooldown_reason or account.cooldown_source or "Telegram cooldown"
+    return (
+        f"Пауза до: {cooldown_until:%Y-%m-%d %H:%M UTC}\n"
+        f"Осталось: ~{hours_left} ч\n"
+        f"Причина паузы: {reason}"
+    )
+
+
+def as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 async def get_legacy_account_info(existing_accounts) -> dict | None:

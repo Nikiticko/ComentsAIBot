@@ -69,6 +69,28 @@ class MailingAutomation:
             while True:
                 accounts = await self._get_active_accounts()
                 if not accounts:
+                    cooldown_account = await self._get_next_cooldown_account()
+                    if cooldown_account is not None and cooldown_account.cooldown_until is not None:
+                        cooldown_until = self._as_utc(cooldown_account.cooldown_until)
+                        sleep_seconds = self._cooldown_sleep_seconds(cooldown_until)
+                        message = (
+                            "Все активные TG-аккаунты на паузе. "
+                            f"Ближайший доступен: {cooldown_until:%Y-%m-%d %H:%M UTC}. "
+                            f"Причина: {cooldown_account.cooldown_reason or '-'}"
+                        )
+                        await bot.send_message(chat_id, message)
+                        await self._write_log(
+                            LogLevel.WARNING,
+                            "mailing_paused_all_accounts_cooldown",
+                            message,
+                            payload={
+                                "account_id": cooldown_account.id,
+                                "sleep_seconds": sleep_seconds,
+                            },
+                        )
+                        await asyncio.sleep(sleep_seconds)
+                        continue
+
                     await bot.send_message(
                         chat_id,
                         "Рассылка остановлена: нет активных TG-аккаунтов.",
@@ -128,6 +150,10 @@ class MailingAutomation:
     async def _get_active_accounts(self) -> list[TelegramAccount]:
         async with async_session_factory() as session:
             return await TelegramAccountRepository(session).list_active()
+
+    async def _get_next_cooldown_account(self) -> TelegramAccount | None:
+        async with async_session_factory() as session:
+            return await TelegramAccountRepository(session).get_next_cooldown_account()
 
     async def _get_candidate_channels(self, excluded_channel_ids: set[int]) -> list[Channel]:
         async with async_session_factory() as session:
@@ -261,6 +287,15 @@ class MailingAutomation:
 
     def _account_title(self, account: TelegramAccount) -> str:
         return account.username or account.first_name or account.session_name
+
+    def _cooldown_sleep_seconds(self, cooldown_until: datetime) -> int:
+        seconds = int((cooldown_until - datetime.now(timezone.utc)).total_seconds())
+        return max(60, seconds)
+
+    def _as_utc(self, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
     async def _send_sent_report(
         self,

@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import distinct, func, select
+from sqlalchemy import distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from comments_ai_bot.core.types import CommentStatus, LogLevel
@@ -168,6 +168,10 @@ class TelegramAccountRepository:
         account.is_active = True
         account.status = "active"
         account.last_error = None
+        account.cooldown_until = None
+        account.cooldown_reason = None
+        account.cooldown_source = None
+        account.flood_wait_seconds = None
         await self.session.flush()
         return account
 
@@ -200,6 +204,10 @@ class TelegramAccountRepository:
         account.is_active = True
         account.status = "active"
         account.last_error = None
+        account.cooldown_until = None
+        account.cooldown_reason = None
+        account.cooldown_source = None
+        account.flood_wait_seconds = None
         await self.session.flush()
         return account
 
@@ -211,6 +219,10 @@ class TelegramAccountRepository:
         account.status = "error"
         account.is_active = False
         account.last_error = error
+        account.cooldown_until = None
+        account.cooldown_reason = None
+        account.cooldown_source = None
+        account.flood_wait_seconds = None
         await self.session.flush()
         return account
 
@@ -239,21 +251,54 @@ class TelegramAccountRepository:
         return list(result.scalars().all())
 
     async def get_active(self) -> TelegramAccount | None:
+        now = datetime.now(timezone.utc)
         result = await self.session.execute(
             select(TelegramAccount)
-            .where(TelegramAccount.is_active.is_(True), TelegramAccount.status == "active")
+            .where(
+                TelegramAccount.is_active.is_(True),
+                TelegramAccount.status == "active",
+                self._available_cooldown_filter(now),
+            )
             .order_by(TelegramAccount.last_used_at.is_not(None), TelegramAccount.last_used_at, TelegramAccount.id)
             .limit(1)
         )
         return result.scalar_one_or_none()
 
     async def list_active(self) -> list[TelegramAccount]:
+        now = datetime.now(timezone.utc)
         result = await self.session.execute(
             select(TelegramAccount)
-            .where(TelegramAccount.is_active.is_(True), TelegramAccount.status == "active")
+            .where(
+                TelegramAccount.is_active.is_(True),
+                TelegramAccount.status == "active",
+                self._available_cooldown_filter(now),
+            )
             .order_by(TelegramAccount.last_used_at.is_not(None), TelegramAccount.last_used_at, TelegramAccount.id)
         )
         return list(result.scalars().all())
+
+    async def list_enabled(self) -> list[TelegramAccount]:
+        result = await self.session.execute(
+            select(TelegramAccount)
+            .where(TelegramAccount.is_active.is_(True), TelegramAccount.status == "active")
+            .order_by(TelegramAccount.id)
+        )
+        return list(result.scalars().all())
+
+    async def get_next_cooldown_account(self) -> TelegramAccount | None:
+        now = datetime.now(timezone.utc)
+        result = await self.session.execute(
+            select(TelegramAccount)
+            .where(
+                TelegramAccount.is_active.is_(True),
+                TelegramAccount.status == "active",
+                TelegramAccount.cooldown_until.is_not(None),
+                TelegramAccount.cooldown_until > now,
+            )
+            .order_by(TelegramAccount.cooldown_until, TelegramAccount.id)
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
 
     async def mark_used(self, account_id: int) -> TelegramAccount | None:
         account = await self.get(account_id)
@@ -262,6 +307,33 @@ class TelegramAccountRepository:
 
         account.last_used_at = datetime.now(timezone.utc)
         account.usage_count += 1
+        cooldown_until = self._as_utc(account.cooldown_until)
+        if cooldown_until is not None and cooldown_until <= account.last_used_at:
+            account.cooldown_until = None
+            account.cooldown_reason = None
+            account.cooldown_source = None
+            account.flood_wait_seconds = None
+        await self.session.flush()
+        return account
+
+    async def mark_cooldown(
+        self,
+        account_id: int,
+        *,
+        until: datetime,
+        reason: str,
+        source: str,
+        flood_wait_seconds: int | None = None,
+    ) -> TelegramAccount | None:
+        account = await self.get(account_id)
+        if account is None:
+            return None
+
+        account.cooldown_until = until
+        account.cooldown_reason = reason
+        account.cooldown_source = source
+        account.flood_wait_seconds = flood_wait_seconds
+        account.last_error = reason
         await self.session.flush()
         return account
 
@@ -283,6 +355,19 @@ class TelegramAccountRepository:
 
         await self.session.delete(account)
         return account
+
+    def _available_cooldown_filter(self, now: datetime):
+        return or_(
+            TelegramAccount.cooldown_until.is_(None),
+            TelegramAccount.cooldown_until <= now,
+        )
+
+    def _as_utc(self, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
 
 class PostRepository:
