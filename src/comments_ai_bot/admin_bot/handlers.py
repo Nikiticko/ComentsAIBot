@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import logging
 import re
 import time
@@ -27,7 +28,7 @@ from comments_ai_bot.admin_bot.keyboards import (
 )
 from comments_ai_bot.ai.service import MIN_AI_CONTEXT_TEXT_CHARS
 from comments_ai_bot.ai.topic_test import AiTopicTester, MIN_AI_TEST_TEXT_CHARS
-from comments_ai_bot.admin_bot.states import ChannelStates
+from comments_ai_bot.admin_bot.states import ChannelStates, TelegramAuthStates
 from comments_ai_bot.core.config import settings
 from comments_ai_bot.db.repositories import (
     ChannelRepository,
@@ -42,6 +43,7 @@ from comments_ai_bot.publishing.ai_comments import AiCommentSender
 from comments_ai_bot.telegram_client.auth import (
     copy_legacy_session_files,
     create_legacy_client,
+    finish_password_login,
     legacy_session_path,
     remove_session_files,
     start_qr_login,
@@ -54,6 +56,16 @@ USERNAME_RE = re.compile(r"^@[A-Za-z0-9_]{5,32}$")
 TELEGRAM_MESSAGE_LIMIT = 3500
 READY_POSTS_LIMIT = 20
 AI_SEND_LIMIT = 30
+
+
+@dataclass
+class PendingTelegram2FA:
+    account_id: int
+    session_name: str
+    client: object
+
+
+pending_telegram_2fa: dict[int, PendingTelegram2FA] = {}
 
 
 def normalize_channel_username(value: str) -> str | None:
@@ -349,12 +361,12 @@ async def get_legacy_account_info(existing_accounts) -> dict | None:
 
 
 @router.callback_query(F.data == "tg_account:add")
-async def add_telegram_account(callback: CallbackQuery) -> None:
+async def add_telegram_account(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer("Генерирую QR")
-    await send_telegram_qr_auth(callback.message)
+    await send_telegram_qr_auth(callback.message, state, callback.from_user.id)
 
 
-async def send_telegram_qr_auth(message: Message) -> None:
+async def send_telegram_qr_auth(message: Message, state: FSMContext, user_id: int) -> None:
     try:
         async with async_session_factory() as session:
             repo = TelegramAccountRepository(session)
@@ -378,29 +390,138 @@ async def send_telegram_qr_auth(message: Message) -> None:
         ),
     )
 
-    result = await wait_qr_login(client, qr_login)
+    result = await wait_qr_login(client, qr_login, session_name=session_name)
+    if result.needs_password:
+        old_pending = pending_telegram_2fa.pop(user_id, None)
+        if old_pending is not None:
+            await old_pending.client.disconnect()
+
+        pending_telegram_2fa[user_id] = PendingTelegram2FA(
+            account_id=account.id,
+            session_name=session_name,
+            client=client,
+        )
+        await state.set_state(TelegramAuthStates.waiting_for_2fa_password)
+        await message.answer(result.message, reply_markup=cancel_keyboard())
+        return
+
     async with async_session_factory() as session:
         repo = TelegramAccountRepository(session)
         if result.ok:
-            me = await start_authorized_account_probe(session_name)
-            await repo.mark_authorized(
-                account.id,
-                telegram_user_id=me["id"],
-                username=me["username"],
-                first_name=me["first_name"],
-                phone=me["phone"],
-            )
-            await LogRepository(session).info(
-                "telegram_account_added",
-                f"Добавлен Telegram-аккаунт {me['username'] or me['id']}",
-                "telegram_account",
-                account.id,
-            )
+            await save_authorized_telegram_account(repo, session, account.id, session_name)
         else:
             await repo.mark_error(account.id, result.message)
         await session.commit()
 
     await message.answer(result.message, reply_markup=main_menu())
+
+
+@router.message(TelegramAuthStates.waiting_for_2fa_password, F.text == CANCEL)
+async def cancel_telegram_2fa(message: Message, state: FSMContext) -> None:
+    pending = pending_telegram_2fa.pop(message.from_user.id, None)
+    if pending is not None:
+        await pending.client.disconnect()
+        async with async_session_factory() as session:
+            await TelegramAccountRepository(session).mark_error(
+                pending.account_id,
+                "Ввод 2FA-пароля отменён.",
+            )
+            await session.commit()
+
+    await state.clear()
+    await message.answer("Авторизация Telegram отменена.", reply_markup=main_menu())
+
+
+@router.message(TelegramAuthStates.waiting_for_2fa_password)
+async def finish_telegram_2fa(message: Message, state: FSMContext) -> None:
+    pending = pending_telegram_2fa.get(message.from_user.id)
+    if pending is None:
+        await state.clear()
+        await message.answer(
+            "Активная авторизация не найдена. Запусти добавление аккаунта снова.",
+            reply_markup=main_menu(),
+        )
+        return
+
+    password = (message.text or "").strip()
+    if not password:
+        await message.answer(
+            "Отправь 2FA-пароль Telegram или нажми Отмена.",
+            reply_markup=cancel_keyboard(),
+        )
+        return
+
+    try:
+        await message.delete()
+    except Exception:
+        logger.warning("Failed to delete Telegram 2FA password message")
+
+    result = await finish_password_login(
+        pending.client,
+        password,
+        session_name=pending.session_name,
+    )
+    if result.needs_password:
+        await message.answer(result.message, reply_markup=cancel_keyboard())
+        return
+
+    pending_telegram_2fa.pop(message.from_user.id, None)
+    try:
+        async with async_session_factory() as session:
+            repo = TelegramAccountRepository(session)
+            if result.ok:
+                me = await connected_account_info(pending.client)
+                await save_authorized_telegram_account(
+                    repo,
+                    session,
+                    pending.account_id,
+                    pending.session_name,
+                    me=me,
+                )
+            else:
+                await repo.mark_error(pending.account_id, result.message)
+            await session.commit()
+    finally:
+        await pending.client.disconnect()
+
+    await state.clear()
+    await message.answer(result.message, reply_markup=main_menu())
+
+
+async def save_authorized_telegram_account(
+    repo: TelegramAccountRepository,
+    session,
+    account_id: int,
+    session_name: str,
+    *,
+    me: dict | None = None,
+) -> None:
+    if me is None:
+        me = await start_authorized_account_probe(session_name)
+
+    await repo.mark_authorized(
+        account_id,
+        telegram_user_id=me["id"],
+        username=me["username"],
+        first_name=me["first_name"],
+        phone=me["phone"],
+    )
+    await LogRepository(session).info(
+        "telegram_account_added",
+        f"Добавлен Telegram-аккаунт {me['username'] or me['id']}",
+        "telegram_account",
+        account_id,
+    )
+
+
+async def connected_account_info(client: object) -> dict:
+    me = await client.get_me()
+    return {
+        "id": me.id,
+        "username": me.username,
+        "first_name": me.first_name,
+        "phone": me.phone,
+    }
 
 
 async def start_authorized_account_probe(session_name: str) -> dict:
@@ -788,4 +909,3 @@ def crop_text(text: str, limit: int) -> str:
     if len(clean_text) <= limit:
         return clean_text
     return f"{clean_text[: limit - 3]}..."
-
