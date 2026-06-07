@@ -23,6 +23,7 @@ from comments_ai_bot.admin_bot.keyboards import (
     TELEGRAM_AUTH,
     cancel_keyboard,
     channel_actions,
+    logs_actions,
     main_menu,
     telegram_account_actions,
     telegram_accounts_menu,
@@ -247,14 +248,50 @@ async def list_logs(callback: CallbackQuery) -> None:
 
 async def send_logs(message: Message) -> None:
     async with async_session_factory() as session:
-        logs = await LogRepository(session).latest(limit=10)
+        logs = await LogRepository(session).list_all()
 
     if not logs:
-        await message.answer("Логов пока нет.", reply_markup=main_menu())
+        await message.answer("Сохранённых логов пока нет.", reply_markup=logs_actions())
         return
 
-    text = "\n\n".join(f"{log.created_at:%Y-%m-%d %H:%M} [{log.level}] {log.message}" for log in logs)
-    await message.answer(text, reply_markup=main_menu())
+    report = build_logs_report(logs)
+    await message.answer_document(
+        BufferedInputFile(report.encode("utf-8"), filename="comments-ai-bot-logs.txt"),
+        caption=f"Сохранённых логов: {len(logs)}",
+        reply_markup=logs_actions(),
+    )
+
+
+@router.callback_query(F.data == "logs:clear")
+async def clear_logs(callback: CallbackQuery) -> None:
+    async with async_session_factory() as session:
+        deleted_count = await LogRepository(session).delete_all()
+        await session.commit()
+
+    await callback.message.answer(
+        f"Логи очищены. Удалено записей: {deleted_count}.",
+        reply_markup=main_menu(),
+    )
+    await callback.answer()
+
+
+def build_logs_report(logs) -> str:
+    lines = ["Comments AI Bot logs", f"Total: {len(logs)}", ""]
+    for log in logs:
+        entity = ""
+        if log.entity_type or log.entity_id is not None:
+            entity = f" | entity={log.entity_type or '-'}:{log.entity_id or '-'}"
+        payload = f" | payload={log.payload}" if log.payload else ""
+        lines.append(
+            (
+                f"{log.created_at:%Y-%m-%d %H:%M:%S} "
+                f"[{log.level}] {log.event}{entity}{payload}\n"
+                f"{log.message}"
+            )
+        )
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 @router.message(F.text == READY_TO_COMMENT_POSTS)

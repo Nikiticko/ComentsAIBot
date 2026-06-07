@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import distinct, func, or_, select
+from sqlalchemy import delete, distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from comments_ai_bot.core.config import settings
@@ -130,6 +130,14 @@ class LogRepository:
     async def latest(self, limit: int = 10) -> list[Log]:
         result = await self.session.execute(select(Log).order_by(Log.id.desc()).limit(limit))
         return list(result.scalars().all())
+
+    async def list_all(self) -> list[Log]:
+        result = await self.session.execute(select(Log).order_by(Log.id))
+        return list(result.scalars().all())
+
+    async def delete_all(self) -> int:
+        result = await self.session.execute(delete(Log))
+        return int(result.rowcount or 0)
 
 
 class TelegramAccountRepository:

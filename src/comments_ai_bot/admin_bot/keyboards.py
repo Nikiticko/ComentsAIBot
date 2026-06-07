@@ -38,6 +38,14 @@ def cancel_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+def logs_actions() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Очистить логи", callback_data="logs:clear")],
+        ]
+    )
+
+
 def channel_actions(channel_id: int, is_active: bool) -> InlineKeyboardMarkup:
     toggle_text = "Выключить" if is_active else "Включить"
     return InlineKeyboardMarkup(
