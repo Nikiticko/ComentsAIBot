@@ -7,7 +7,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from comments_ai_bot.core.logging import setup_logging
+from comments_ai_bot.core.logging import setup_logging  # noqa: E402
 
 WATCH_PATHS = (
     PROJECT_ROOT / "src",

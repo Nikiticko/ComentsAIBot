@@ -19,8 +19,8 @@ from telethon.errors import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from comments_ai_bot.core.config import settings
-from comments_ai_bot.core.logging import setup_logging
+from comments_ai_bot.core.config import settings  # noqa: E402
+from comments_ai_bot.core.logging import setup_logging  # noqa: E402
 
 logger = logging.getLogger(__name__)
 AuthMode = Literal["qr", "phone"]

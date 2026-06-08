@@ -172,6 +172,56 @@ systemctl restart comments-ai-bot
 journalctl -u comments-ai-bot -f
 ```
 
+## 10. CI/CD через GitHub Actions
+
+В проекте есть workflow `.github/workflows/deploy.yml`.
+
+Что делает pipeline:
+
+- на каждый push в `main` ставит зависимости;
+- запускает `ruff check .`;
+- компилирует Python-файлы через `python -m compileall`;
+- если проверки прошли, подключается к серверу по SSH и выполняет деплой.
+
+Добавь в GitHub: `Settings` -> `Secrets and variables` -> `Actions`.
+
+Secrets:
+
+```text
+DEPLOY_HOST=ip_или_домен_сервера
+DEPLOY_USER=пользователь_на_сервере
+DEPLOY_SSH_KEY=приватный_ssh_ключ_для_деплоя
+DEPLOY_PORT=22
+```
+
+Variables, если значения отличаются от стандартных:
+
+```text
+DEPLOY_PATH=/var/www/ComentsAIBot
+SERVICE_NAME=comments-ai-bot
+```
+
+Публичный ключ от `DEPLOY_SSH_KEY` должен быть добавлен на сервер в:
+
+```bash
+~/.ssh/authorized_keys
+```
+
+Пользователь `DEPLOY_USER` должен иметь права выполнить:
+
+```bash
+cd /var/www/ComentsAIBot
+git pull --ff-only
+source .venv/bin/activate
+pip install -e .
+alembic upgrade head
+systemctl restart comments-ai-bot
+systemctl status comments-ai-bot --no-pager
+```
+
+Если `systemctl` требует sudo, настрой passwordless sudo только для этого сервиса
+или запускай Actions под пользователем, которому уже разрешено управлять сервисом.
+
 ## Важно
 
 - Не запускай два экземпляра с одним `ADMIN_BOT_TOKEN`.
