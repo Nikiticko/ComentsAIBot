@@ -46,11 +46,8 @@ jobs:
     steps:
       - name: Prepare SSH
         env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         run: |
-          test -n "$DEPLOY_HOST"
           test -n "$DEPLOY_SSH_KEY"
 
           mkdir -p ~/.ssh
@@ -63,17 +60,22 @@ jobs:
           ssh-keygen -y -f ~/.ssh/deploy_key > ~/.ssh/deploy_key.pub
           ssh-keygen -lf ~/.ssh/deploy_key.pub
 
-          ssh-keyscan -p "$DEPLOY_PORT" "$DEPLOY_HOST" >> ~/.ssh/known_hosts
-
       - name: Test SSH connection
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
         run: |
+          test -n "$DEPLOY_HOST"
           test -n "$DEPLOY_USER"
-          ssh -o BatchMode=yes -o IdentitiesOnly=yes \
-            -i ~/.ssh/deploy_key -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+          test -n "$DEPLOY_PORT"
+
+          ssh -o StrictHostKeyChecking=no \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -i ~/.ssh/deploy_key \
+            -p "$DEPLOY_PORT" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
             "whoami && hostname"
 
       - name: Deploy
@@ -84,17 +86,32 @@ jobs:
           DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/var/www/ComentsAIBot' }}
           SERVICE_NAME: ${{ vars.SERVICE_NAME || 'comments-ai-bot' }}
         run: |
+          test -n "$DEPLOY_HOST"
           test -n "$DEPLOY_USER"
-          ssh -o BatchMode=yes -o IdentitiesOnly=yes \
-            -i ~/.ssh/deploy_key -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+          test -n "$DEPLOY_PORT"
+          test -n "$DEPLOY_PATH"
+          test -n "$SERVICE_NAME"
+
+          ssh -o StrictHostKeyChecking=no \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -i ~/.ssh/deploy_key \
+            -p "$DEPLOY_PORT" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
             "DEPLOY_PATH='$DEPLOY_PATH' SERVICE_NAME='$SERVICE_NAME' bash -s" <<'EOF'
           set -euo pipefail
 
           cd "$DEPLOY_PATH"
+
           git pull --ff-only
+
           source .venv/bin/activate
+
           pip install -e .
+
           alembic upgrade head
+
           systemctl restart "$SERVICE_NAME"
+
           systemctl status "$SERVICE_NAME" --no-pager
           EOF
