@@ -22,7 +22,7 @@ python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 ```
-
+ 
 2. Создать `.env` по примеру `.env.example` и заполнить обязательные переменные.
 3. Создать папку под SQLite:
 
