@@ -52,10 +52,17 @@ jobs:
         run: |
           test -n "$DEPLOY_HOST"
           test -n "$DEPLOY_SSH_KEY"
+
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
+
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
+
+          echo "Public key fingerprint from GitHub secret:"
+          ssh-keygen -y -f ~/.ssh/deploy_key > ~/.ssh/deploy_key.pub
+          ssh-keygen -lf ~/.ssh/deploy_key.pub
+
           ssh-keyscan -p "$DEPLOY_PORT" "$DEPLOY_HOST" >> ~/.ssh/known_hosts
 
       - name: Test SSH connection
