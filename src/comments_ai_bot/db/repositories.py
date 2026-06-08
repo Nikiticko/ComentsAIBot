@@ -535,6 +535,24 @@ class PostRepository:
         )
         return list(result.all())
 
+    async def list_recent_processed_post_ids(
+        self,
+        *,
+        channel_id: int,
+        hours: int = 24,
+        statuses: set[str] | None = None,
+    ) -> set[int]:
+        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+        query = select(Post.telegram_post_id).where(
+            Post.channel_id == channel_id,
+            Post.updated_at >= since,
+        )
+        if statuses is not None:
+            query = query.where(Post.status.in_(statuses))
+
+        result = await self.session.execute(query)
+        return set(result.scalars().all())
+
 
 class CommentRepository:
     def __init__(self, session: AsyncSession) -> None:

@@ -44,6 +44,14 @@ CHANNEL_COOLDOWN_HOURS = {
     "write_forbidden": 24,
     "invalid_discussion_post": 6,
 }
+RECENT_PROCESSED_POST_STATUSES = {
+    PostStatus.SKIPPED.value,
+    PostStatus.COMMENTS_CLOSED.value,
+    PostStatus.FORBIDDEN_TOPIC.value,
+    PostStatus.COMMENT_GENERATED.value,
+    PostStatus.PUBLISHED.value,
+    PostStatus.PUBLISH_FAILED.value,
+}
 logger = logging.getLogger(__name__)
 
 
@@ -238,7 +246,7 @@ class AiCommentSender:
                     if result.comments_sent > sent_before:
                         break
 
-            if account_id is not None and result.channels_processed:
+            if account_id is not None and result.comments_sent:
                 async with async_session_factory() as session:
                     await TelegramAccountRepository(session).mark_used(account_id)
                     await session.commit()
@@ -419,7 +427,7 @@ class AiCommentSender:
                         "model": settings.openai_model,
                     },
                 )
-                return "done"
+                return "skip"
 
             comment_text = await self.ai_service.generate_comment(post_text)
             comment_validation = await self.ai_service.validate_comment(post_text, comment_text)
@@ -482,7 +490,7 @@ class AiCommentSender:
             result.items.append(
                 AiCommentItem(post_url, "skipped", comment_validation.get("reason"))
             )
-            return "done"
+            return "skip"
 
         comment_post_ids = (availability.post_id or post.id,)
 
@@ -516,6 +524,13 @@ class AiCommentSender:
                 CommentStatus.FAILED.value,
                 comment_text,
                 error_message=classified_error.message,
+            )
+            await self._save_post(
+                channel,
+                post,
+                PostStatus.PUBLISH_FAILED.value,
+                classified_error.message,
+                topic_analysis=validation.to_dict(),
             )
             await self._write_log(
                 LogLevel.ERROR,
@@ -564,6 +579,12 @@ class AiCommentSender:
             comment_text,
             telegram_comment_id=telegram_comment_id,
         )
+        await self._save_post(
+            channel,
+            post,
+            PostStatus.PUBLISHED.value,
+            topic_analysis=validation.to_dict(),
+        )
         await self._write_log(
             LogLevel.INFO,
             "ai_comment_sent",
@@ -589,10 +610,17 @@ class AiCommentSender:
 
     async def _get_recent_attempted_post_ids(self, channel_id: int) -> set[int]:
         async with async_session_factory() as session:
-            return await CommentRepository(session).list_recent_attempted_post_ids(
+            commented_post_ids = await CommentRepository(session).list_recent_attempted_post_ids(
                 channel_id=channel_id,
                 hours=RECENT_ATTEMPT_HOURS,
             )
+            processed_post_ids = await PostRepository(session).list_recent_processed_post_ids(
+                channel_id=channel_id,
+                hours=RECENT_ATTEMPT_HOURS,
+                statuses=RECENT_PROCESSED_POST_STATUSES,
+            )
+
+        return commented_post_ids | processed_post_ids
 
     def _post_url(self, channel_username: str, post_id: int) -> str:
         return f"https://t.me/{channel_username.removeprefix('@')}/{post_id}"
