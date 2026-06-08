@@ -159,7 +159,6 @@ systemctl restart comments-ai-bot
 ```bash
 systemctl stop comments-ai-bot
 ```
-
 ## 9. Обновление
 
 ```bash
