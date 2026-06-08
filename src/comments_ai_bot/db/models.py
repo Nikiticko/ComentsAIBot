@@ -28,6 +28,10 @@ class Channel(Base, TimestampMixin):
     title: Mapped[str | None] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_post_id: Mapped[int | None] = mapped_column(BigInteger)
+    telegram_channel_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    telegram_access_hash: Mapped[int | None] = mapped_column(BigInteger)
+    entity_resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    entity_error: Mapped[str | None] = mapped_column(Text)
 
     posts: Mapped[list["Post"]] = relationship(back_populates="channel")
 

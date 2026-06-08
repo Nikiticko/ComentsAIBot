@@ -6,9 +6,11 @@ from pathlib import Path
 
 from telethon import TelegramClient, errors
 from telethon.tl.custom.message import Message
-from telethon.tl.types import Channel
+from telethon.tl.types import Channel, InputPeerChannel
 
 from comments_ai_bot.core.config import settings
+from comments_ai_bot.db.repositories import ChannelRepository
+from comments_ai_bot.db.session import async_session_factory
 
 logger = logging.getLogger(__name__)
 COMMENT_VERIFY_ATTEMPTS = 3
@@ -17,11 +19,17 @@ MISSING_USERNAME_MARKERS = (
     "no user has",
     "as username",
 )
+MISSING_ENTITY_MARKERS = (
+    "cannot find any entity corresponding",
+    "nobody is using this username",
+)
 
 
 def is_missing_username_error(error: Exception) -> bool:
     message = str(error).casefold()
-    return all(marker in message for marker in MISSING_USERNAME_MARKERS)
+    return all(marker in message for marker in MISSING_USERNAME_MARKERS) or any(
+        marker in message for marker in MISSING_ENTITY_MARKERS
+    )
 
 
 @dataclass(frozen=True)
@@ -160,12 +168,69 @@ class TelegramAccountClient:
     def _has_comment_thread(self, message: Message) -> bool:
         return bool(message.replies and getattr(message.replies, "comments", False))
 
-    async def _get_broadcast_channel(self, channel_username: str) -> Channel:
-        entity = await self.client.get_entity(channel_username)
+    async def _get_broadcast_channel(self, channel_username: str) -> Channel | InputPeerChannel:
+        cached_entity = await self._get_cached_channel_entity(channel_username)
+        if cached_entity is not None:
+            try:
+                entity = await self.client.get_entity(cached_entity)
+                if isinstance(entity, Channel) and bool(getattr(entity, "broadcast", False)):
+                    return entity
+            except (errors.RPCError, ValueError) as error:
+                logger.warning(
+                    "Cached entity failed for %s, resolving username again: %s",
+                    channel_username,
+                    error,
+                )
+                await self._mark_channel_entity_error(channel_username, str(error))
+
+        try:
+            entity = await self.client.get_entity(channel_username)
+        except Exception as error:
+            await self._mark_channel_entity_error(channel_username, str(error))
+            raise
+
         if isinstance(entity, Channel) and bool(getattr(entity, "broadcast", False)):
+            await self._cache_channel_entity(channel_username, entity)
             return entity
 
         raise ValueError(f"{channel_username} — это чат/группа, а не Telegram-канал")
+
+    async def _get_cached_channel_entity(
+        self,
+        channel_username: str,
+    ) -> InputPeerChannel | None:
+        async with async_session_factory() as session:
+            channel = await ChannelRepository(session).get_by_username(channel_username)
+
+        if (
+            channel is None
+            or channel.telegram_channel_id is None
+            or channel.telegram_access_hash is None
+        ):
+            return None
+
+        return InputPeerChannel(
+            channel_id=channel.telegram_channel_id,
+            access_hash=channel.telegram_access_hash,
+        )
+
+    async def _cache_channel_entity(self, channel_username: str, entity: Channel) -> None:
+        access_hash = getattr(entity, "access_hash", None)
+        if access_hash is None:
+            return
+
+        async with async_session_factory() as session:
+            await ChannelRepository(session).cache_entity(
+                channel_username,
+                telegram_channel_id=int(entity.id),
+                telegram_access_hash=int(access_hash),
+            )
+            await session.commit()
+
+    async def _mark_channel_entity_error(self, channel_username: str, error: str) -> None:
+        async with async_session_factory() as session:
+            await ChannelRepository(session).mark_entity_error(channel_username, error[:1000])
+            await session.commit()
 
     async def can_comment(
         self,

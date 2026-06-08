@@ -195,15 +195,23 @@ class Settings:
 
     @property
     def mailing_interval_seconds(self) -> int:
-        return int(_getenv("MAILING_INTERVAL_SECONDS", "300") or "300")
+        return int(_getenv("MAILING_INTERVAL_SECONDS", "900") or "900")
 
     @property
     def telegram_account_min_idle_seconds(self) -> int:
-        return int(_getenv("TELEGRAM_ACCOUNT_MIN_IDLE_SECONDS", "900") or "900")
+        return int(_getenv("TELEGRAM_ACCOUNT_MIN_IDLE_SECONDS", "3600") or "3600")
 
     @property
     def ai_comment_automation_channel_attempt_limit(self) -> int:
-        return int(_getenv("AI_COMMENT_AUTOMATION_CHANNEL_ATTEMPT_LIMIT", "3") or "3")
+        return int(_getenv("AI_COMMENT_AUTOMATION_CHANNEL_ATTEMPT_LIMIT", "2") or "2")
+
+    @property
+    def ai_comment_send_delay_min_seconds(self) -> int:
+        return int(_getenv("AI_COMMENT_SEND_DELAY_MIN_SECONDS", "45") or "45")
+
+    @property
+    def ai_comment_send_delay_max_seconds(self) -> int:
+        return int(_getenv("AI_COMMENT_SEND_DELAY_MAX_SECONDS", "120") or "120")
 
     @property
     def app_env(self) -> AppEnv:

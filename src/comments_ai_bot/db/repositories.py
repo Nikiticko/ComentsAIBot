@@ -64,6 +64,34 @@ class ChannelRepository:
         await self.session.flush()
         return channel
 
+    async def cache_entity(
+        self,
+        username: str,
+        *,
+        telegram_channel_id: int,
+        telegram_access_hash: int,
+    ) -> Channel | None:
+        channel = await self.get_by_username(username)
+        if channel is None:
+            return None
+
+        channel.telegram_channel_id = telegram_channel_id
+        channel.telegram_access_hash = telegram_access_hash
+        channel.entity_resolved_at = datetime.now(timezone.utc)
+        channel.entity_error = None
+        await self.session.flush()
+        return channel
+
+    async def mark_entity_error(self, username: str, error: str) -> Channel | None:
+        channel = await self.get_by_username(username)
+        if channel is None:
+            return None
+
+        channel.entity_error = error
+        channel.entity_resolved_at = datetime.now(timezone.utc)
+        await self.session.flush()
+        return channel
+
     async def delete(self, channel_id: int) -> bool:
         channel = await self.session.get(Channel, channel_id)
         if channel is None:

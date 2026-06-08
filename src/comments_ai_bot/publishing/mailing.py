@@ -24,6 +24,10 @@ from comments_ai_bot.publishing.ai_comments import (
 
 MAILING_INTERVAL_SECONDS = settings.mailing_interval_seconds
 TELEGRAM_ACCOUNT_MIN_IDLE_SECONDS = settings.telegram_account_min_idle_seconds
+AI_COMMENT_SEND_DELAY_RANGE_SECONDS = (
+    settings.ai_comment_send_delay_min_seconds,
+    settings.ai_comment_send_delay_max_seconds,
+)
 TELEGRAM_MESSAGE_LIMIT = 3500
 try:
     LOCAL_TZ = ZoneInfo("Europe/Kyiv")
@@ -176,7 +180,7 @@ class MailingAutomation:
         if account_count <= 0:
             return groups
 
-        per_account_limit = AUTOMATION_CHANNEL_ATTEMPT_LIMIT * 3
+        per_account_limit = AUTOMATION_CHANNEL_ATTEMPT_LIMIT
         for index, channel in enumerate(channels):
             group = groups[index % account_count]
             if len(group) < per_account_limit:
@@ -189,7 +193,7 @@ class MailingAutomation:
         account: TelegramAccount,
         channel_ids: set[int],
     ) -> tuple[TelegramAccount, AiCommentResult]:
-        sender = AiCommentSender(send_delay_range_seconds=(0, 0))
+        sender = AiCommentSender(send_delay_range_seconds=AI_COMMENT_SEND_DELAY_RANGE_SECONDS)
         result = await sender.send_one_for_account(
             session_name=account.session_name,
             account_id=account.id,

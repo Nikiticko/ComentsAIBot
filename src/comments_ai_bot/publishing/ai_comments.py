@@ -531,6 +531,15 @@ class AiCommentSender:
                 },
             )
 
+            if is_missing_username_error(error):
+                result.broken_channels += 1
+                await self._disable_channel(
+                    channel.id,
+                    channel.username,
+                    classified_error.message,
+                    source="ai_comments_publish",
+                )
+
             if classified_error.cooldown_hours is not None:
                 await self._put_channel_on_cooldown(
                     channel.username,
