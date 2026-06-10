@@ -13,7 +13,9 @@ from comments_ai_bot.admin_bot.keyboards import (
     ADD_CHANNEL,
     AI_TEST,
     AUTO_ADD_CHANNELS,
+    BAD_CHANNELS,
     CANCEL,
+    CHANNEL_STATS,
     CHANNEL_LIST,
     LOGS,
     ONE_AI_SEND,
@@ -32,6 +34,7 @@ from comments_ai_bot.ai.service import MIN_AI_CONTEXT_TEXT_CHARS
 from comments_ai_bot.ai.topic_test import AiTopicTester, MIN_AI_TEST_TEXT_CHARS
 from comments_ai_bot.admin_bot.states import ChannelStates, TelegramAuthStates
 from comments_ai_bot.core.config import settings
+from comments_ai_bot.core.types import ChannelStatus
 from comments_ai_bot.db.repositories import (
     ChannelRepository,
     LogRepository,
@@ -87,6 +90,29 @@ def normalize_channel_username(value: str) -> str | None:
     return username
 
 
+def channel_efficiency_score(channel) -> float:
+    return channel.success_count / max(channel.posts_checked_count, 1)
+
+
+def format_channel_line(channel, *, with_error: bool = False) -> str:
+    score = channel_efficiency_score(channel)
+    line = (
+        f"{channel.username} | {channel.status} | "
+        f"ok {channel.success_count}/{channel.checks_count} | "
+        f"posts {channel.posts_checked_count} | score {score:.3f}"
+    )
+    if with_error and channel.last_error:
+        line = f"{line} | {channel.last_error[:160]}"
+    return line
+
+
+def format_channel_score(channel) -> str:
+    return (
+        f"{channel.username}: {channel_efficiency_score(channel):.3f} "
+        f"({channel.success_count}/{channel.posts_checked_count}, {channel.status})"
+    )
+
+
 def new_telegram_session_name() -> str:
     return f"tg_account_{time.time_ns() // 1_000_000}"
 
@@ -134,9 +160,13 @@ async def add_channel(message: Message, state: FSMContext) -> None:
     async with async_session_factory() as session:
         repo = ChannelRepository(session)
         existing = await repo.get_by_username(username)
-        channel = await repo.add(username=username)
+        channel = await repo.add(username=username, activate_existing=existing is not None)
         event = "channel_enabled" if existing else "channel_added"
-        message_text = f"Канал {username} включён повторно." if existing else f"Добавлен канал {username}"
+        message_text = (
+            f"Канал {username} включён повторно."
+            if existing
+            else f"Добавлен канал {username}"
+        )
         await LogRepository(session).info(event, message_text, "channel", channel.id)
         await session.commit()
 
@@ -176,8 +206,51 @@ async def send_channel_list(message: Message) -> None:
         return
 
     lines = [f"Каналов: {len(channels)}", ""]
-    lines.extend(channel.username for channel in channels)
+    lines.extend(format_channel_line(channel) for channel in channels)
 
+    for chunk in split_messages(lines):
+        await message.answer(chunk, reply_markup=main_menu())
+
+
+@router.message(F.text == BAD_CHANNELS)
+async def bad_channels_from_menu(message: Message) -> None:
+    async with async_session_factory() as session:
+        channels = await ChannelRepository(session).list_all()
+
+    bad_statuses = {
+        ChannelStatus.BAD_USERNAME.value,
+        ChannelStatus.WRITE_FORBIDDEN.value,
+        ChannelStatus.NEED_JOIN.value,
+        ChannelStatus.LOW_EFFICIENCY.value,
+        ChannelStatus.IGNORED.value,
+        ChannelStatus.COMMENTS_CLOSED.value,
+    }
+    bad_channels = [channel for channel in channels if channel.status in bad_statuses]
+    if not bad_channels:
+        await message.answer("Плохих каналов нет.", reply_markup=main_menu())
+        return
+
+    lines = [f"Плохих каналов: {len(bad_channels)}", ""]
+    lines.extend(format_channel_line(channel, with_error=True) for channel in bad_channels)
+    for chunk in split_messages(lines):
+        await message.answer(chunk, reply_markup=main_menu())
+
+
+@router.message(F.text == CHANNEL_STATS)
+async def channel_stats_from_menu(message: Message) -> None:
+    async with async_session_factory() as session:
+        channels = await ChannelRepository(session).list_all()
+
+    if not channels:
+        await message.answer("Каналы ещё не добавлены.", reply_markup=main_menu())
+        return
+
+    top = sorted(channels, key=channel_efficiency_score, reverse=True)[:10]
+    bottom = sorted(channels, key=channel_efficiency_score)[:10]
+    lines = ["Самые эффективные:", *[format_channel_score(channel) for channel in top]]
+    lines.extend(
+        ["", "Самые бесполезные:", *[format_channel_score(channel) for channel in bottom]]
+    )
     for chunk in split_messages(lines):
         await message.answer(chunk, reply_markup=main_menu())
 
@@ -189,7 +262,7 @@ async def toggle_channel(callback: CallbackQuery) -> None:
         repo = ChannelRepository(session)
         channel = await repo.toggle(channel_id)
         if channel is not None:
-            status = "включён" if channel.is_active else "выключен"
+            status = channel.status
             await LogRepository(session).info(
                 "channel_toggled",
                 f"Канал {channel.username} {status}",
@@ -202,9 +275,8 @@ async def toggle_channel(callback: CallbackQuery) -> None:
         await callback.answer("Канал не найден", show_alert=True)
         return
 
-    status = "включен" if channel.is_active else "выключен"
     await callback.message.edit_text(
-        f"{channel.username}\nСтатус: {status}",
+        format_channel_line(channel, with_error=True),
         reply_markup=channel_actions(channel.id, channel.is_active),
     )
     await callback.answer()

@@ -19,6 +19,17 @@ class PostStatus(StrEnum):
     ERROR = "error"
 
 
+class ChannelStatus(StrEnum):
+    ACTIVE = "active"
+    COOLDOWN = "cooldown"
+    BAD_USERNAME = "bad_username"
+    COMMENTS_CLOSED = "comments_closed"
+    NEED_JOIN = "need_join"
+    WRITE_FORBIDDEN = "write_forbidden"
+    LOW_EFFICIENCY = "low_efficiency"
+    IGNORED = "ignored"
+
+
 class CommentStatus(StrEnum):
     GENERATED = "generated"
     PUBLISHED = "published"

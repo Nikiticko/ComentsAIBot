@@ -4,6 +4,8 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardBu
 ADD_CHANNEL = "Добавить канал"
 AUTO_ADD_CHANNELS = "Авто каналы TGStat"
 CHANNEL_LIST = "Список каналов"
+BAD_CHANNELS = "Плохие каналы"
+CHANNEL_STATS = "Статистика каналов"
 READY_TO_COMMENT_POSTS = "Ready 20к+"
 ONE_AI_SEND = "Одна ИИ-отправка"
 AI_TEST = "Тест ИИ"
@@ -18,6 +20,7 @@ def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=ADD_CHANNEL), KeyboardButton(text=CHANNEL_LIST)],
+            [KeyboardButton(text=BAD_CHANNELS), KeyboardButton(text=CHANNEL_STATS)],
             [KeyboardButton(text=AUTO_ADD_CHANNELS)],
             [KeyboardButton(text=READY_TO_COMMENT_POSTS), KeyboardButton(text=ONE_AI_SEND)],
             [KeyboardButton(text=AI_TEST)],

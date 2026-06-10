@@ -4,7 +4,7 @@ from typing import Any
 from sqlalchemy import JSON, BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-from comments_ai_bot.core.types import CommentStatus, LogLevel, PostStatus
+from comments_ai_bot.core.types import ChannelStatus, CommentStatus, LogLevel, PostStatus
 
 
 class Base(DeclarativeBase):
@@ -27,7 +27,22 @@ class Channel(Base, TimestampMixin):
     username: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     title: Mapped[str | None] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(50),
+        default=ChannelStatus.ACTIVE.value,
+        index=True,
+        nullable=False,
+    )
     last_post_id: Mapped[int | None] = mapped_column(BigInteger)
+    checks_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    success_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    fail_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    posts_checked_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    comments_closed_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    too_short_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     telegram_channel_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
     telegram_access_hash: Mapped[int | None] = mapped_column(BigInteger)
     entity_resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

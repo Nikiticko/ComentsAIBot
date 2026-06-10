@@ -8,7 +8,7 @@ from telethon.errors import RPCError
 
 from comments_ai_bot.ai.service import MIN_AI_CONTEXT_TEXT_CHARS, AiService
 from comments_ai_bot.core.config import settings
-from comments_ai_bot.core.types import LogLevel, PostStatus
+from comments_ai_bot.core.types import ChannelStatus, LogLevel, PostStatus
 from comments_ai_bot.db.repositories import (
     ChannelRepository,
     LogRepository,
@@ -341,13 +341,21 @@ class AiTopicTester:
         reason: str,
     ) -> None:
         async with async_session_factory() as session:
-            await ChannelRepository(session).disable(channel_id)
+            await ChannelRepository(session).mark_failure(
+                channel_id,
+                reason,
+                status=ChannelStatus.BAD_USERNAME,
+            )
             await LogRepository(session).warning(
-                "channel_auto_disabled",
-                f"{channel_username} | отключён | {reason}",
+                "channel_status_changed",
+                f"{channel_username} | bad_username | {reason}",
                 "channel",
                 channel_id,
-                payload={"reason": reason, "source": "ai_topic_test"},
+                payload={
+                    "reason": reason,
+                    "source": "ai_topic_test",
+                    "status": ChannelStatus.BAD_USERNAME.value,
+                },
             )
             await session.commit()
 

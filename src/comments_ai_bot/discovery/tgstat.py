@@ -227,6 +227,10 @@ class TgstatChannelImporter:
                 if result.channels_total_before + result.channels_added >= self.target_total:
                     break
 
+                if await self._channel_exists(candidate.username):
+                    result.channels_existing += 1
+                    continue
+
                 readable = await self._is_channel_readable(telegram, candidate, result)
                 if readable is None:
                     break
@@ -344,6 +348,11 @@ class TgstatChannelImporter:
     async def _count_channels(self) -> int:
         async with async_session_factory() as session:
             return await ChannelRepository(session).count()
+
+    async def _channel_exists(self, username: str) -> bool:
+        async with async_session_factory() as session:
+            channel = await ChannelRepository(session).get_by_username(username)
+        return channel is not None
 
     async def _get_telegram_sessions(self) -> list[str | None]:
         async with async_session_factory() as session:

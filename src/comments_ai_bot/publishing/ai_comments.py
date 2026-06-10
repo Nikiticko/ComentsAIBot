@@ -15,13 +15,12 @@ from telethon.errors import (
 
 from comments_ai_bot.ai.service import MIN_AI_CONTEXT_TEXT_CHARS, AiService
 from comments_ai_bot.core.config import settings
-from comments_ai_bot.core.types import CommentStatus, LogLevel, PostStatus
+from comments_ai_bot.core.types import ChannelStatus, CommentStatus, LogLevel, PostStatus
 from comments_ai_bot.db.repositories import (
     ChannelRepository,
     CommentRepository,
     LogRepository,
     PostRepository,
-    SettingRepository,
     TelegramAccountRepository,
 )
 from comments_ai_bot.db.session import async_session_factory
@@ -34,14 +33,11 @@ from comments_ai_bot.telegram_client.client import (
 )
 
 SEND_DELAY_RANGE_SECONDS = (30, 60)
-AI_COMMENT_CHANNEL_COOLDOWNS_KEY = "ai_comment_channel_cooldowns"
 MIN_POST_AGE_MINUTES = 10
 RECENT_ATTEMPT_HOURS = 24
 AUTOMATION_CHANNEL_ATTEMPT_LIMIT = settings.ai_comment_automation_channel_attempt_limit
 CHANNEL_COOLDOWN_HOURS = {
     "deleted_after_send": 24,
-    "need_join_discussion": 72,
-    "write_forbidden": 24,
     "invalid_discussion_post": 6,
 }
 RECENT_PROCESSED_POST_STATUSES = {
@@ -112,7 +108,6 @@ class AiCommentSender:
         async with async_session_factory() as session:
             channels = await ChannelRepository(session).list_active()
             accounts = await TelegramAccountRepository(session).list_active()
-            cooldowns = await SettingRepository(session).get_value(AI_COMMENT_CHANNEL_COOLDOWNS_KEY)
             result.channels_total = len(channels)
 
         if not channels:
@@ -134,14 +129,6 @@ class AiCommentSender:
 
         try:
             for index, channel in enumerate(channels):
-                cooldown_reason = self._get_active_cooldown_reason(cooldowns, channel.username)
-                if cooldown_reason:
-                    result.comments_skipped += 1
-                    result.items.append(
-                        AiCommentItem(channel.username, "cooldown", cooldown_reason)
-                    )
-                    continue
-
                 session_name = account_sessions[index % len(account_sessions)]
                 current_account_id = account_ids.get(session_name)
                 result.channel_username = channel.username
@@ -197,7 +184,6 @@ class AiCommentSender:
 
         async with async_session_factory() as session:
             channels = await ChannelRepository(session).list_active()
-            cooldowns = await SettingRepository(session).get_value(AI_COMMENT_CHANNEL_COOLDOWNS_KEY)
             result.channels_total = len(channels)
 
         channels = [channel for channel in channels if channel.id not in excluded_channel_ids]
@@ -218,17 +204,6 @@ class AiCommentSender:
                             f"Достигнут лимит каналов за цикл: {max_channels_attempted}."
                         )
                         break
-
-                    cooldown_reason = self._get_active_cooldown_reason(
-                        cooldowns,
-                        channel.username,
-                    )
-                    if cooldown_reason:
-                        result.comments_skipped += 1
-                        result.items.append(
-                            AiCommentItem(channel.username, "cooldown", cooldown_reason)
-                        )
-                        continue
 
                     sent_before = result.comments_sent
                     result.channel_username = channel.username
@@ -272,6 +247,7 @@ class AiCommentSender:
         *,
         account_id: int | None = None,
     ) -> bool:
+        await self._mark_channel_checked(channel.id)
         try:
             posts = await telegram.fetch_recent_posts(
                 channel.username,
@@ -285,12 +261,15 @@ class AiCommentSender:
             result.items.append(AiCommentItem(channel.username, "skipped", str(error)))
             if is_missing_username_error(error):
                 result.broken_channels += 1
-                await self._disable_channel(
+                await self._mark_channel_status(
                     channel.id,
                     channel.username,
                     str(error),
+                    ChannelStatus.BAD_USERNAME,
                     source="ai_comments",
                 )
+            else:
+                await self._mark_channel_failure(channel.id, str(error))
             await self._write_log(
                 LogLevel.WARNING,
                 "ai_comment_channel_skipped",
@@ -303,6 +282,7 @@ class AiCommentSender:
         random.shuffle(posts)
         posts = self._filter_mature_posts(posts)
         result.posts_found += len(posts)
+        await self._add_channel_posts_checked(channel.id, len(posts))
         attempted_post_ids = await self._get_recent_attempted_post_ids(channel.id)
 
         for post in posts:
@@ -367,6 +347,7 @@ class AiCommentSender:
             result.comments_skipped += 1
             reason = f"Текст короче {MIN_AI_CONTEXT_TEXT_CHARS} символов"
             result.items.append(AiCommentItem(post_url, "skipped", reason))
+            await self._add_channel_too_short(channel.id)
             await self._save_post(
                 channel,
                 post,
@@ -382,6 +363,10 @@ class AiCommentSender:
             result.posts_comments_closed += 1
             result.comments_skipped += 1
             result.items.append(AiCommentItem(post_url, "skipped", availability.reason))
+            await self._mark_channel_comments_closed(
+                channel.id,
+                availability.reason or "Комментарии недоступны",
+            )
             await self._save_post(
                 channel,
                 post,
@@ -548,20 +533,40 @@ class AiCommentSender:
 
             if is_missing_username_error(error):
                 result.broken_channels += 1
-                await self._disable_channel(
+                await self._mark_channel_status(
                     channel.id,
                     channel.username,
                     classified_error.message,
+                    ChannelStatus.BAD_USERNAME,
                     source="ai_comments_publish",
                 )
 
             if classified_error.cooldown_hours is not None:
                 await self._put_channel_on_cooldown(
+                    channel.id,
                     channel.username,
                     classified_error.code,
                     classified_error.message,
                     classified_error.cooldown_hours,
                 )
+            elif classified_error.code == ChannelStatus.WRITE_FORBIDDEN.value:
+                await self._mark_channel_status(
+                    channel.id,
+                    channel.username,
+                    classified_error.message,
+                    ChannelStatus.WRITE_FORBIDDEN,
+                    source="ai_comments_publish",
+                )
+            elif classified_error.code == ChannelStatus.NEED_JOIN.value:
+                await self._mark_channel_status(
+                    channel.id,
+                    channel.username,
+                    classified_error.message,
+                    ChannelStatus.NEED_JOIN,
+                    source="ai_comments_publish",
+                )
+            else:
+                await self._mark_channel_failure(channel.id, classified_error.message)
 
             if classified_error.account_level:
                 if isinstance(error, FloodWaitError):
@@ -572,6 +577,7 @@ class AiCommentSender:
             return "done"
 
         result.comments_sent += 1
+        await self._mark_channel_success(channel.id)
         result.items.append(AiCommentItem(post_url, "sent"))
         await self._save_comment(
             db_post_id,
@@ -644,15 +650,13 @@ class AiCommentSender:
             )
         if isinstance(error, (ChatWriteForbiddenError, UserBannedInChannelError)):
             return ClassifiedSendError(
-                "write_forbidden",
+                ChannelStatus.WRITE_FORBIDDEN.value,
                 message,
-                cooldown_hours=CHANNEL_COOLDOWN_HOURS["write_forbidden"],
             )
         if "join the discussion group" in normalized:
             return ClassifiedSendError(
-                "need_join_discussion",
+                ChannelStatus.NEED_JOIN.value,
                 message,
-                cooldown_hours=CHANNEL_COOLDOWN_HOURS["need_join_discussion"],
             )
         if "не найден при проверке" in normalized:
             return ClassifiedSendError(
@@ -671,6 +675,7 @@ class AiCommentSender:
 
     async def _put_channel_on_cooldown(
         self,
+        channel_id: int,
         channel_username: str,
         reason_code: str,
         reason: str,
@@ -678,14 +683,11 @@ class AiCommentSender:
     ) -> None:
         until = datetime.now(timezone.utc) + timedelta(hours=hours)
         async with async_session_factory() as session:
-            repo = SettingRepository(session)
-            cooldowns = await repo.get_value(AI_COMMENT_CHANNEL_COOLDOWNS_KEY)
-            cooldowns[channel_username] = {
-                "until": until.isoformat(),
-                "reason_code": reason_code,
-                "reason": reason,
-            }
-            await repo.set_value(AI_COMMENT_CHANNEL_COOLDOWNS_KEY, cooldowns)
+            await ChannelRepository(session).mark_cooldown(
+                channel_id,
+                until=until,
+                reason=reason,
+            )
             await LogRepository(session).warning(
                 "channel_cooldown_set",
                 "Канал "
@@ -752,48 +754,55 @@ class AiCommentSender:
 
         return type(error).__name__
 
-    async def _disable_channel(
+    async def _mark_channel_status(
         self,
         channel_id: int,
         channel_username: str,
         reason: str,
+        status: ChannelStatus,
         *,
         source: str,
     ) -> None:
         async with async_session_factory() as session:
-            await ChannelRepository(session).disable(channel_id)
+            await ChannelRepository(session).mark_failure(channel_id, reason, status=status)
             await LogRepository(session).warning(
-                "channel_auto_disabled",
-                f"{channel_username} | отключён | {reason}",
+                "channel_status_changed",
+                f"{channel_username} | {status.value} | {reason}",
                 "channel",
                 channel_id,
-                payload={"reason": reason, "source": source},
+                payload={"reason": reason, "source": source, "status": status.value},
             )
             await session.commit()
 
-    def _get_active_cooldown_reason(
-        self,
-        cooldowns: dict,
-        channel_username: str,
-    ) -> str | None:
-        item = cooldowns.get(channel_username)
-        if not item:
-            return None
+    async def _mark_channel_checked(self, channel_id: int) -> None:
+        async with async_session_factory() as session:
+            await ChannelRepository(session).mark_checked(channel_id)
+            await session.commit()
 
-        until_raw = item.get("until")
-        if not until_raw:
-            return None
+    async def _add_channel_posts_checked(self, channel_id: int, count: int) -> None:
+        async with async_session_factory() as session:
+            await ChannelRepository(session).add_posts_checked(channel_id, count)
+            await session.commit()
 
-        try:
-            until = datetime.fromisoformat(until_raw)
-        except ValueError:
-            return None
+    async def _add_channel_too_short(self, channel_id: int) -> None:
+        async with async_session_factory() as session:
+            await ChannelRepository(session).add_too_short(channel_id)
+            await session.commit()
 
-        if until <= datetime.now(timezone.utc):
-            return None
+    async def _mark_channel_comments_closed(self, channel_id: int, reason: str) -> None:
+        async with async_session_factory() as session:
+            await ChannelRepository(session).mark_comments_closed(channel_id, reason)
+            await session.commit()
 
-        reason = item.get("reason") or item.get("reason_code") or "channel cooldown"
-        return f"{reason}; пауза до {until:%Y-%m-%d %H:%M}"
+    async def _mark_channel_success(self, channel_id: int) -> None:
+        async with async_session_factory() as session:
+            await ChannelRepository(session).mark_success(channel_id)
+            await session.commit()
+
+    async def _mark_channel_failure(self, channel_id: int, reason: str) -> None:
+        async with async_session_factory() as session:
+            await ChannelRepository(session).mark_failure(channel_id, reason)
+            await session.commit()
 
     def _readable_ai_message(
         self,

@@ -5,7 +5,7 @@ from pathlib import Path
 from telethon.errors import RPCError
 
 from comments_ai_bot.core.config import settings
-from comments_ai_bot.core.types import PostStatus
+from comments_ai_bot.core.types import ChannelStatus, PostStatus
 from comments_ai_bot.db.repositories import (
     ChannelRepository,
     LogRepository,
@@ -122,6 +122,10 @@ class ManualPostScanner:
         account_label: str,
         result: ScanResult,
     ) -> None:
+        async with async_session_factory() as session:
+            await ChannelRepository(session).mark_checked(channel.id)
+            await session.commit()
+
         try:
             posts = await telegram.fetch_recent_posts(
                 channel.username,
@@ -134,14 +138,24 @@ class ManualPostScanner:
             logger.exception("Failed to scan channel %s", channel.username)
             async with async_session_factory() as session:
                 if is_missing_username_error(error):
-                    await ChannelRepository(session).disable(channel.id)
+                    await ChannelRepository(session).mark_failure(
+                        channel.id,
+                        str(error),
+                        status=ChannelStatus.BAD_USERNAME,
+                    )
                     await LogRepository(session).warning(
-                        "channel_auto_disabled",
-                        f"{channel.username} | отключён | {error}",
+                        "channel_status_changed",
+                        f"{channel.username} | bad_username | {error}",
                         "channel",
                         channel.id,
-                        payload={"reason": str(error), "source": "manual_scan"},
+                        payload={
+                            "reason": str(error),
+                            "source": "manual_scan",
+                            "status": ChannelStatus.BAD_USERNAME.value,
+                        },
                     )
+                else:
+                    await ChannelRepository(session).mark_failure(channel.id, str(error))
                 await LogRepository(session).error(
                     "channel_scan_failed",
                     f"Не удалось спарсить {channel.username}: {error}",
@@ -153,6 +167,10 @@ class ManualPostScanner:
             return
 
         result.posts_checked += len(posts)
+        async with async_session_factory() as session:
+            await ChannelRepository(session).add_posts_checked(channel.id, len(posts))
+            await session.commit()
+
         result.channel_stats[channel.username] = {
             "checked": len(posts),
             "high_view": 0,
@@ -190,6 +208,10 @@ class ManualPostScanner:
                     else:
                         status = PostStatus.COMMENTS_CLOSED.value
                         skip_reason = availability.reason or "Комментарии недоступны"
+                        await ChannelRepository(session).mark_comments_closed(
+                            channel.id,
+                            skip_reason,
+                        )
 
                     result.high_view_posts.append(
                         HighViewPost(

@@ -5,10 +5,26 @@ from sqlalchemy import delete, distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from comments_ai_bot.core.config import settings
-from comments_ai_bot.core.types import CommentStatus, LogLevel
+from comments_ai_bot.core.types import ChannelStatus, CommentStatus, LogLevel
 from comments_ai_bot.db.models import Channel, Comment, Log, Post, Setting, TelegramAccount
 
 MAX_TELEGRAM_ACCOUNTS = 100
+COMMENTS_CLOSED_STATUS_THRESHOLD = 10
+LOW_EFFICIENCY_CHECKS_THRESHOLD = 20
+LOW_EFFICIENCY_SUCCESS_THRESHOLD = 1
+COMMENTS_CLOSED_RECHECK_DAYS = 3
+PERMANENT_CHANNEL_STATUSES = {
+    ChannelStatus.BAD_USERNAME.value,
+    ChannelStatus.WRITE_FORBIDDEN.value,
+    ChannelStatus.NEED_JOIN.value,
+    ChannelStatus.IGNORED.value,
+}
+PROTECTED_EFFICIENCY_STATUSES = {
+    ChannelStatus.BAD_USERNAME.value,
+    ChannelStatus.WRITE_FORBIDDEN.value,
+    ChannelStatus.NEED_JOIN.value,
+    ChannelStatus.IGNORED.value,
+}
 
 
 class ChannelRepository:
@@ -19,14 +35,24 @@ class ChannelRepository:
         result = await self.session.execute(select(func.count()).select_from(Channel))
         return int(result.scalar_one())
 
-    async def add(self, username: str, title: str | None = None) -> Channel:
+    async def add(
+        self,
+        username: str,
+        title: str | None = None,
+        *,
+        activate_existing: bool = False,
+    ) -> Channel:
         existing = await self.get_by_username(username)
         if existing:
             existing.title = title or existing.title
-            existing.is_active = True
+            if activate_existing:
+                existing.status = ChannelStatus.ACTIVE.value
+                existing.is_active = True
+                existing.cooldown_until = None
+                existing.last_error = None
             return existing
 
-        channel = Channel(username=username, title=title)
+        channel = Channel(username=username, title=title, status=ChannelStatus.ACTIVE.value)
         self.session.add(channel)
         await self.session.flush()
         return channel
@@ -43,8 +69,28 @@ class ChannelRepository:
         return list(result.scalars().all())
 
     async def list_active(self) -> list[Channel]:
+        now = datetime.now(timezone.utc)
+        stale_comments_closed_at = now - timedelta(days=COMMENTS_CLOSED_RECHECK_DAYS)
         result = await self.session.execute(
-            select(Channel).where(Channel.is_active.is_(True)).order_by(Channel.id)
+            select(Channel)
+            .where(
+                Channel.is_active.is_(True),
+                or_(
+                    Channel.status == ChannelStatus.ACTIVE.value,
+                    (
+                        (Channel.status == ChannelStatus.COOLDOWN.value)
+                        & self._available_cooldown_filter(now)
+                    ),
+                    (
+                        (Channel.status == ChannelStatus.COMMENTS_CLOSED.value)
+                        & or_(
+                            Channel.last_checked_at.is_(None),
+                            Channel.last_checked_at <= stale_comments_closed_at,
+                        )
+                    ),
+                ),
+            )
+            .order_by(Channel.last_checked_at.is_not(None), Channel.last_checked_at, Channel.id)
         )
         return list(result.scalars().all())
 
@@ -52,7 +98,14 @@ class ChannelRepository:
         channel = await self.session.get(Channel, channel_id)
         if channel is None:
             return None
-        channel.is_active = not channel.is_active
+        if channel.status == ChannelStatus.ACTIVE.value and channel.is_active:
+            channel.status = ChannelStatus.IGNORED.value
+            channel.is_active = False
+        else:
+            channel.status = ChannelStatus.ACTIVE.value
+            channel.is_active = True
+            channel.cooldown_until = None
+            channel.last_error = None
         await self.session.flush()
         return channel
 
@@ -61,8 +114,159 @@ class ChannelRepository:
         if channel is None:
             return None
         channel.is_active = False
+        channel.status = ChannelStatus.IGNORED.value
         await self.session.flush()
         return channel
+
+    async def set_status(
+        self,
+        channel_id: int,
+        status: ChannelStatus,
+        *,
+        error: str | None = None,
+        cooldown_until: datetime | None = None,
+    ) -> Channel | None:
+        channel = await self.session.get(Channel, channel_id)
+        if channel is None:
+            return None
+
+        channel.status = status.value
+        channel.is_active = status != ChannelStatus.IGNORED
+        channel.last_error = error
+        channel.cooldown_until = cooldown_until if status == ChannelStatus.COOLDOWN else None
+        await self.session.flush()
+        return channel
+
+    async def mark_checked(self, channel_id: int) -> Channel | None:
+        channel = await self.session.get(Channel, channel_id)
+        if channel is None:
+            return None
+
+        now = datetime.now(timezone.utc)
+        channel.checks_count += 1
+        channel.last_checked_at = now
+        cooldown_until = self._as_utc(channel.cooldown_until)
+        if channel.status == ChannelStatus.COOLDOWN.value and (
+            cooldown_until is None or cooldown_until <= now
+        ):
+            channel.status = ChannelStatus.ACTIVE.value
+            channel.cooldown_until = None
+            channel.last_error = None
+        await self.session.flush()
+        return channel
+
+    async def add_posts_checked(self, channel_id: int, count: int) -> Channel | None:
+        channel = await self.session.get(Channel, channel_id)
+        if channel is None:
+            return None
+
+        channel.posts_checked_count += max(0, count)
+        self._refresh_efficiency_status(channel)
+        await self.session.flush()
+        return channel
+
+    async def add_too_short(self, channel_id: int, count: int = 1) -> Channel | None:
+        channel = await self.session.get(Channel, channel_id)
+        if channel is None:
+            return None
+
+        channel.too_short_count += max(0, count)
+        await self.session.flush()
+        return channel
+
+    async def mark_comments_closed(
+        self,
+        channel_id: int,
+        reason: str | None = None,
+    ) -> Channel | None:
+        channel = await self.session.get(Channel, channel_id)
+        if channel is None:
+            return None
+
+        channel.comments_closed_count += 1
+        if reason:
+            channel.last_error = reason
+        if (
+            channel.comments_closed_count >= COMMENTS_CLOSED_STATUS_THRESHOLD
+            and channel.success_count == 0
+            and channel.status not in PERMANENT_CHANNEL_STATUSES
+        ):
+            channel.status = ChannelStatus.COMMENTS_CLOSED.value
+        await self.session.flush()
+        return channel
+
+    async def mark_success(self, channel_id: int) -> Channel | None:
+        channel = await self.session.get(Channel, channel_id)
+        if channel is None:
+            return None
+
+        channel.success_count += 1
+        channel.last_error = None
+        if channel.status in {
+            ChannelStatus.COOLDOWN.value,
+            ChannelStatus.COMMENTS_CLOSED.value,
+            ChannelStatus.LOW_EFFICIENCY.value,
+        }:
+            channel.status = ChannelStatus.ACTIVE.value
+            channel.cooldown_until = None
+        await self.session.flush()
+        return channel
+
+    async def mark_failure(
+        self,
+        channel_id: int,
+        error: str,
+        *,
+        status: ChannelStatus | None = None,
+        cooldown_until: datetime | None = None,
+    ) -> Channel | None:
+        channel = await self.session.get(Channel, channel_id)
+        if channel is None:
+            return None
+
+        channel.fail_count += 1
+        channel.last_error = error
+        next_status = status or self.classify_error(error)
+        if next_status is not None:
+            channel.status = next_status.value
+            channel.cooldown_until = (
+                cooldown_until if next_status == ChannelStatus.COOLDOWN else None
+            )
+        self._refresh_efficiency_status(channel)
+        await self.session.flush()
+        return channel
+
+    async def mark_cooldown(
+        self,
+        channel_id: int,
+        *,
+        until: datetime,
+        reason: str,
+    ) -> Channel | None:
+        return await self.mark_failure(
+            channel_id,
+            reason,
+            status=ChannelStatus.COOLDOWN,
+            cooldown_until=until,
+        )
+
+    def classify_error(self, error: str) -> ChannelStatus | None:
+        normalized = error.casefold()
+        if (
+            "no user has" in normalized
+            or "cannot find any entity" in normalized
+            or "nobody is using this username" in normalized
+        ):
+            return ChannelStatus.BAD_USERNAME
+        if "can't write in this chat" in normalized or "write forbidden" in normalized:
+            return ChannelStatus.WRITE_FORBIDDEN
+        if "join the discussion group" in normalized or "need_join_discussion" in normalized:
+            return ChannelStatus.NEED_JOIN
+        if "comments closed" in normalized or (
+            "комментарии" in normalized and "не включены" in normalized
+        ):
+            return ChannelStatus.COMMENTS_CLOSED
+        return None
 
     async def cache_entity(
         self,
@@ -89,6 +293,10 @@ class ChannelRepository:
 
         channel.entity_error = error
         channel.entity_resolved_at = datetime.now(timezone.utc)
+        status = self.classify_error(error)
+        if status is not None:
+            channel.status = status.value
+            channel.last_error = error
         await self.session.flush()
         return channel
 
@@ -98,6 +306,32 @@ class ChannelRepository:
             return False
         await self.session.delete(channel)
         return True
+
+    def _available_cooldown_filter(self, now: datetime):
+        return or_(
+            Channel.cooldown_until.is_(None),
+            Channel.cooldown_until <= now,
+        )
+
+    def _refresh_efficiency_status(self, channel: Channel) -> None:
+        if channel.status in PROTECTED_EFFICIENCY_STATUSES:
+            return
+        if (
+            channel.checks_count >= LOW_EFFICIENCY_CHECKS_THRESHOLD
+            and channel.success_count <= LOW_EFFICIENCY_SUCCESS_THRESHOLD
+        ):
+            channel.status = ChannelStatus.LOW_EFFICIENCY.value
+            channel.last_error = (
+                "Низкая эффективность: "
+                f"{channel.success_count}/{channel.checks_count} успешных проверок"
+            )
+
+    def _as_utc(self, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
 
 class LogRepository:
