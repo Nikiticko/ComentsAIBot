@@ -1,3 +1,5 @@
+from comments_ai_bot.core.config import settings
+
 FORBIDDEN_TOPICS = {
     "политика",
     "война",
@@ -16,4 +18,10 @@ FORBIDDEN_TOPICS = {
     "благотворительные сборы",
 }
 
-MIN_POST_VIEWS = 20_000
+MIN_POST_VIEWS = settings.post_min_views
+
+
+def format_min_post_views() -> str:
+    if MIN_POST_VIEWS >= 1_000 and MIN_POST_VIEWS % 1_000 == 0:
+        return f"{MIN_POST_VIEWS // 1_000}к+"
+    return f"{MIN_POST_VIEWS}+"

@@ -42,6 +42,7 @@ from comments_ai_bot.db.repositories import (
 )
 from comments_ai_bot.db.session import async_session_factory
 from comments_ai_bot.discovery.tgstat import TgstatChannelImporter
+from comments_ai_bot.filtering.rules import format_min_post_views
 from comments_ai_bot.monitoring.manual_scan import ManualPostScanner
 from comments_ai_bot.publishing.mailing import mailing_automation
 from comments_ai_bot.publishing.ai_comments import AiCommentSender
@@ -962,7 +963,8 @@ class ReadyPostsReporter:
         self.message = message
 
     async def send(self) -> None:
-        await self.message.answer("Сканирую каналы и ищу Ready 20к+.")
+        min_views_label = format_min_post_views()
+        await self.message.answer(f"Сканирую каналы и ищу Ready {min_views_label}.")
 
         try:
             result = await ManualPostScanner().scan_high_view_posts()
@@ -991,9 +993,10 @@ class ReadyPostsReporter:
             if post.comments_available
         ]
         summary = (
-            "Ready 20к+ готово.\n"
+            f"Ready {min_views_label} готово.\n"
             f"Каналов: {result.channels_total}, ошибок: {result.channels_failed}\n"
-            f"Проверено: {result.posts_checked}, 20к+: {len(result.high_view_posts)}, "
+            f"Проверено: {result.posts_checked}, "
+            f"{min_views_label}: {len(result.high_view_posts)}, "
             f"ready: {len(ready_posts)}"
         )
         await self.message.answer(summary, reply_markup=main_menu())

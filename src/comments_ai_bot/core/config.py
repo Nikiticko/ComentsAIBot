@@ -206,6 +206,10 @@ class Settings:
         return int(_getenv("AI_COMMENT_AUTOMATION_CHANNEL_ATTEMPT_LIMIT", "2") or "2")
 
     @property
+    def post_min_views(self) -> int:
+        return int(_getenv("POST_MIN_VIEWS", "25000") or "25000")
+
+    @property
     def ai_comment_send_delay_min_seconds(self) -> int:
         return int(_getenv("AI_COMMENT_SEND_DELAY_MIN_SECONDS", "45") or "45")
 

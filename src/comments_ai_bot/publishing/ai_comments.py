@@ -24,6 +24,7 @@ from comments_ai_bot.db.repositories import (
     TelegramAccountRepository,
 )
 from comments_ai_bot.db.session import async_session_factory
+from comments_ai_bot.filtering.rules import MIN_POST_VIEWS
 from comments_ai_bot.filtering.validation import PostValidator
 from comments_ai_bot.monitoring.manual_scan import POST_SCAN_HOURS, POST_SCAN_LIMIT
 from comments_ai_bot.telegram_client.client import (
@@ -352,6 +353,19 @@ class AiCommentSender:
                 channel,
                 post,
                 PostStatus.SKIPPED.value,
+                reason,
+            )
+            return "skip"
+
+        views_count = post.views or 0
+        if views_count < MIN_POST_VIEWS:
+            result.comments_skipped += 1
+            reason = f"Недостаточно просмотров: {views_count} < {MIN_POST_VIEWS}"
+            result.items.append(AiCommentItem(post_url, "skipped", reason))
+            await self._save_post(
+                channel,
+                post,
+                PostStatus.VIEWS_TOO_LOW.value,
                 reason,
             )
             return "skip"

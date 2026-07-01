@@ -1,12 +1,14 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
+from comments_ai_bot.filtering.rules import format_min_post_views
+
 
 ADD_CHANNEL = "Добавить канал"
 AUTO_ADD_CHANNELS = "Авто каналы TGStat"
 CHANNEL_LIST = "Список каналов"
 BAD_CHANNELS = "Плохие каналы"
 CHANNEL_STATS = "Статистика каналов"
-READY_TO_COMMENT_POSTS = "Ready 20к+"
+READY_TO_COMMENT_POSTS = f"Ready {format_min_post_views()}"
 ONE_AI_SEND = "Одна ИИ-отправка"
 AI_TEST = "Тест ИИ"
 START_MAILING = "Начать рассылку"
