@@ -20,7 +20,7 @@ from comments_ai_bot.telegram_client.client import TelegramAccountClient
 
 logger = logging.getLogger(__name__)
 
-TGSTAT_BASE_URL = "https://uk.tgstat.com"
+DEFAULT_TGSTAT_BASE_URL = "https://tgstat.com"
 TGSTAT_CHANNEL_RATINGS_PATH = "/ratings/channels"
 TGSTAT_PAGE_TIMEOUT_SECONDS = 15
 TGSTAT_REQUEST_DELAY_SECONDS = 1
@@ -141,7 +141,11 @@ class TgstatChannelImporter:
         validate_channels: bool | None = None,
         categories: list[str] | None = None,
         sorts: list[str] | None = None,
+        keywords: list[str] | None = None,
+        base_url: str | None = None,
+        source_urls: list[str] | None = None,
     ) -> None:
+        self.base_url = (base_url or settings.tgstat_base_url or DEFAULT_TGSTAT_BASE_URL).rstrip("/")
         self.max_pages = max_pages or settings.tgstat_import_max_pages
         self.max_channels = max_channels or settings.tgstat_import_max_channels
         self.target_total = target_total or settings.tgstat_import_target_channels
@@ -153,6 +157,10 @@ class TgstatChannelImporter:
         )
         self.categories = categories or settings.tgstat_import_categories
         self.sorts = sorts or settings.tgstat_import_sorts
+        self.keywords = keywords if keywords is not None else settings.tgstat_import_keywords
+        self.source_urls = (
+            source_urls if source_urls is not None else settings.tgstat_import_source_urls
+        )
 
     async def import_public_channels(self) -> TgstatImportResult:
         result = TgstatImportResult()
@@ -162,15 +170,19 @@ class TgstatChannelImporter:
 
         logger.info(
             "TGStat import started: target=%s current=%s max_candidates=%s "
-            "max_pages=%s concurrency=%s validate=%s categories=%s sorts=%s",
+            "max_pages=%s concurrency=%s validate=%s base_url=%s sources=%s "
+            "categories=%s sorts=%s keywords=%s",
             self.target_total,
             result.channels_total_before,
             self.max_channels,
             self.max_pages,
             self.concurrency,
             self.validate_channels,
+            self.base_url,
+            len(self.source_urls),
             len(self.categories),
             ",".join(self.sorts),
+            len(self.keywords),
         )
 
         if result.channels_total_before >= self.target_total:
@@ -193,9 +205,7 @@ class TgstatChannelImporter:
         )
 
         if not candidates:
-            result.errors.append(
-                "TGStat не вернул публичные username каналов."
-            )
+            result.errors.append("TGStat не вернул израильские публичные username каналов.")
             await self._log_result(result)
             return result
 
@@ -280,6 +290,12 @@ class TgstatChannelImporter:
         return list(candidates.values())
 
     def _build_sources(self) -> list[TgstatSource]:
+        if self.source_urls:
+            return [
+                TgstatSource(urljoin(self.base_url, source_url), source_url)
+                for source_url in self.source_urls
+            ]
+
         sources: list[TgstatSource] = []
         for path in self._build_rating_paths():
             for sort in self.sorts:
@@ -289,7 +305,7 @@ class TgstatChannelImporter:
 
         for category in self.categories:
             path = f"/{category}"
-            sources.append(TgstatSource(urljoin(TGSTAT_BASE_URL, path), path))
+            sources.append(TgstatSource(urljoin(self.base_url, path), path))
 
         logger.info("TGStat sources prepared: %s", len(sources))
         return sources
@@ -301,7 +317,7 @@ class TgstatChannelImporter:
         return paths
 
     def _source_url(self, path: str, sort: str) -> str:
-        return urljoin(TGSTAT_BASE_URL, f"{path}?{urlencode({'sort': sort})}")
+        return urljoin(self.base_url, f"{path}?{urlencode({'sort': sort})}")
 
     async def _load_page_limited(
         self,
@@ -336,7 +352,11 @@ class TgstatChannelImporter:
         parser = TgstatChannelHtmlParser()
         parser.feed(html)
         result.pages_checked += 1
-        candidates = list(parser.candidates.values())
+        candidates = [
+            candidate
+            for candidate in parser.candidates.values()
+            if self._candidate_matches_keywords(candidate)
+        ]
         logger.info(
             "TGStat page parsed: source=%s page=%s candidates=%s",
             source.label,
@@ -344,6 +364,13 @@ class TgstatChannelImporter:
             len(candidates),
         )
         return candidates
+
+    def _candidate_matches_keywords(self, candidate: TgstatChannelCandidate) -> bool:
+        if not self.keywords:
+            return True
+
+        haystack = f"{candidate.username} {candidate.title or ''}".casefold()
+        return any(keyword in haystack for keyword in self.keywords)
 
     async def _count_channels(self) -> int:
         async with async_session_factory() as session:
@@ -473,6 +500,9 @@ class TgstatChannelImporter:
                     "pages_checked": result.pages_checked,
                     "pages_failed": result.pages_failed,
                     "candidates_found": result.candidates_found,
+                    "base_url": self.base_url,
+                    "source_urls": self.source_urls,
+                    "keywords": self.keywords,
                     "errors": result.errors[:20],
                 },
             )
@@ -481,7 +511,7 @@ class TgstatChannelImporter:
 
 def fetch_text(url: str) -> str:
     request = Request(
-        urljoin(TGSTAT_BASE_URL, url),
+        url,
         headers={
             "User-Agent": (
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "

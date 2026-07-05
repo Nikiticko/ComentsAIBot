@@ -2,7 +2,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardBu
 
 
 ADD_CHANNEL = "Добавить канал"
-AUTO_ADD_CHANNELS = "Авто каналы TGStat"
+AUTO_ADD_CHANNELS = "Израиль TGStat"
 CHANNEL_LIST = "Список каналов"
 BAD_CHANNELS = "Плохие каналы"
 CHANNEL_STATS = "Статистика каналов"

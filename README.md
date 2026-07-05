@@ -54,12 +54,15 @@ python scripts/auth_telegram.py
 
 Скрипт попросит номер телефона, код Telegram и пароль 2FA, если он включён. После этого сессия сохранится в `data`.
 
-Кнопка `Авто каналы TGStat` добирает базу до целевого количества каналов из публичных
-рейтингов TGStat по нескольким категориям и сортировкам. HTTP-страницы TGStat грузятся
-параллельно, а username добавляются в базу без Telethon-проверки, чтобы не ловить
+Кнопка `Израиль TGStat` добирает базу до целевого количества израильских каналов
+из публичных рейтингов TGStat по нескольким категориям и сортировкам. Кандидаты
+фильтруются по израильским ключевым словам в username/названии канала.
+HTTP-страницы TGStat грузятся параллельно, а username добавляются в базу без Telethon-проверки, чтобы не ловить
 Telegram FloodWait на массовом ResolveUsername. Лимиты можно менять переменными
 `TGSTAT_IMPORT_TARGET_CHANNELS`, `TGSTAT_IMPORT_MAX_PAGES`, `TGSTAT_IMPORT_MAX_CHANNELS`,
-`TGSTAT_IMPORT_CONCURRENCY`, `TGSTAT_IMPORT_CATEGORIES`, `TGSTAT_IMPORT_SORTS`.
+`TGSTAT_IMPORT_CONCURRENCY`, `TGSTAT_IMPORT_CATEGORIES`, `TGSTAT_IMPORT_SORTS`,
+`TGSTAT_IMPORT_SOURCE_URLS`, `TGSTAT_IMPORT_KEYWORDS`.
+Если `TGSTAT_IMPORT_SOURCE_URLS` задан, импорт идёт только по этим TGStat URL.
 Если нужна медленная проверка через Telegram перед добавлением, включи
 `TGSTAT_VALIDATE_CHANNELS=true`.
 По умолчанию цель импорта — 10 000 каналов.

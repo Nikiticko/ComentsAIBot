@@ -246,6 +246,10 @@ class Settings:
         return _getenv_bool("TGSTAT_VALIDATE_CHANNELS", False)
 
     @property
+    def tgstat_base_url(self) -> str:
+        return (_getenv("TGSTAT_BASE_URL", "https://tgstat.com") or "https://tgstat.com").rstrip("/")
+
+    @property
     def tgstat_import_categories(self) -> list[str]:
         value = _getenv(
             "TGSTAT_IMPORT_CATEGORIES",
@@ -261,6 +265,23 @@ class Settings:
     def tgstat_import_sorts(self) -> list[str]:
         value = _getenv("TGSTAT_IMPORT_SORTS", "members,reach,ci,members_t,members_y")
         return [item.strip() for item in (value or "").split(",") if item.strip()]
+
+    @property
+    def tgstat_import_source_urls(self) -> list[str]:
+        value = _getenv("TGSTAT_IMPORT_SOURCE_URLS", "")
+        return [item.strip() for item in (value or "").split(",") if item.strip()]
+
+    @property
+    def tgstat_import_keywords(self) -> list[str]:
+        value = _getenv(
+            "TGSTAT_IMPORT_KEYWORDS",
+            (
+                "israel,israeli,jerusalem,tel aviv,haifa,hebrew,"
+                "израиль,израильский,иерусалим,тель авив,хайфа,иврит,"
+                "ישראל,ישראלי,ירושלים,תל אביב,חיפה,עברית"
+            ),
+        )
+        return [item.strip().casefold() for item in (value or "").split(",") if item.strip()]
 
 
 @lru_cache

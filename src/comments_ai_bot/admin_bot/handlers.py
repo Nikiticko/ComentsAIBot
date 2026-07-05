@@ -935,7 +935,7 @@ class TgstatImportReporter:
 
     async def send(self) -> None:
         await self.message.answer(
-            "Добираю базу каналов из TGStat до целевого объёма."
+            "Добираю базу израильских каналов из TGStat до целевого объёма."
         )
 
         try:
@@ -957,7 +957,7 @@ class TgstatImportReporter:
             return
 
         summary = (
-            "Импорт TGStat завершён.\n"
+            "Импорт израильских TGStat-каналов завершён.\n"
             f"Цель в базе: {result.target_total}\n"
             f"Было каналов: {result.channels_total_before}\n"
             f"Стало каналов: {result.channels_total_after}\n"
