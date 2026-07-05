@@ -1,16 +1,11 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
-from comments_ai_bot.filtering.rules import format_min_post_views
-
 
 ADD_CHANNEL = "Добавить канал"
 AUTO_ADD_CHANNELS = "Авто каналы TGStat"
 CHANNEL_LIST = "Список каналов"
 BAD_CHANNELS = "Плохие каналы"
 CHANNEL_STATS = "Статистика каналов"
-READY_TO_COMMENT_POSTS = f"Ready {format_min_post_views()}"
-ONE_AI_SEND = "Одна ИИ-отправка"
-AI_TEST = "Тест ИИ"
 START_MAILING = "Начать рассылку"
 STOP_MAILING = "Остановить рассылку"
 TELEGRAM_AUTH = "Аккаунты TG"
@@ -24,8 +19,6 @@ def main_menu() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=ADD_CHANNEL), KeyboardButton(text=CHANNEL_LIST)],
             [KeyboardButton(text=BAD_CHANNELS), KeyboardButton(text=CHANNEL_STATS)],
             [KeyboardButton(text=AUTO_ADD_CHANNELS)],
-            [KeyboardButton(text=READY_TO_COMMENT_POSTS), KeyboardButton(text=ONE_AI_SEND)],
-            [KeyboardButton(text=AI_TEST)],
             [KeyboardButton(text=START_MAILING), KeyboardButton(text=STOP_MAILING)],
             [KeyboardButton(text=TELEGRAM_AUTH), KeyboardButton(text=LOGS)],
         ],
@@ -85,7 +78,12 @@ def telegram_accounts_menu() -> InlineKeyboardMarkup:
                     callback_data="tg_account:add_phone",
                 )
             ],
-            [InlineKeyboardButton(text="Подхватить текущую сессию", callback_data="tg_account:import_legacy")],
+            [
+                InlineKeyboardButton(
+                    text="Подхватить текущую сессию",
+                    callback_data="tg_account:import_legacy",
+                )
+            ],
         ]
     )
 

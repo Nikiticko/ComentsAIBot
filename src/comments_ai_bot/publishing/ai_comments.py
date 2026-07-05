@@ -26,13 +26,14 @@ from comments_ai_bot.db.repositories import (
 from comments_ai_bot.db.session import async_session_factory
 from comments_ai_bot.filtering.rules import MIN_POST_VIEWS
 from comments_ai_bot.filtering.validation import PostValidator
-from comments_ai_bot.monitoring.manual_scan import POST_SCAN_HOURS, POST_SCAN_LIMIT
 from comments_ai_bot.telegram_client.client import (
     CommentAvailability,
     TelegramAccountClient,
     is_missing_username_error,
 )
 
+POST_SCAN_LIMIT = 100
+POST_SCAN_HOURS = 24
 SEND_DELAY_RANGE_SECONDS = (30, 60)
 MIN_POST_AGE_MINUTES = 10
 RECENT_ATTEMPT_HOURS = 24

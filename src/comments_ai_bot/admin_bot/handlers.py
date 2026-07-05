@@ -11,15 +11,12 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from comments_ai_bot.admin_bot.keyboards import (
     ADD_CHANNEL,
-    AI_TEST,
     AUTO_ADD_CHANNELS,
     BAD_CHANNELS,
     CANCEL,
     CHANNEL_STATS,
     CHANNEL_LIST,
     LOGS,
-    ONE_AI_SEND,
-    READY_TO_COMMENT_POSTS,
     START_MAILING,
     STOP_MAILING,
     TELEGRAM_AUTH,
@@ -31,7 +28,6 @@ from comments_ai_bot.admin_bot.keyboards import (
     telegram_accounts_menu,
 )
 from comments_ai_bot.ai.service import MIN_AI_CONTEXT_TEXT_CHARS
-from comments_ai_bot.ai.topic_test import AiTopicTester, MIN_AI_TEST_TEXT_CHARS
 from comments_ai_bot.admin_bot.states import ChannelStates, TelegramAuthStates
 from comments_ai_bot.core.config import settings
 from comments_ai_bot.core.types import ChannelStatus
@@ -42,10 +38,7 @@ from comments_ai_bot.db.repositories import (
 )
 from comments_ai_bot.db.session import async_session_factory
 from comments_ai_bot.discovery.tgstat import TgstatChannelImporter
-from comments_ai_bot.filtering.rules import format_min_post_views
-from comments_ai_bot.monitoring.manual_scan import ManualPostScanner
 from comments_ai_bot.publishing.mailing import mailing_automation
-from comments_ai_bot.publishing.ai_comments import AiCommentSender
 from comments_ai_bot.telegram_client.auth import (
     copy_legacy_session_files,
     create_legacy_client,
@@ -62,8 +55,7 @@ router = Router()
 logger = logging.getLogger(__name__)
 USERNAME_RE = re.compile(r"^@[A-Za-z0-9_]{5,32}$")
 TELEGRAM_MESSAGE_LIMIT = 3500
-READY_POSTS_LIMIT = 20
-AI_SEND_LIMIT = 30
+TGSTAT_PREVIEW_LIMIT = 20
 
 
 @dataclass
@@ -365,21 +357,6 @@ def build_logs_report(logs) -> str:
         lines.append("")
 
     return "\n".join(lines)
-
-
-@router.message(F.text == READY_TO_COMMENT_POSTS)
-async def ready_to_comment_posts_from_menu(message: Message) -> None:
-    await ReadyPostsReporter(message).send()
-
-
-@router.message(F.text == ONE_AI_SEND)
-async def send_one_ai_comment_from_menu(message: Message) -> None:
-    await OneAiSendReporter(message).send()
-
-
-@router.message(F.text == AI_TEST)
-async def test_ai_topic_from_menu(message: Message) -> None:
-    await AiTopicTestReporter(message).send()
 
 
 @router.message(F.text == START_MAILING)
@@ -952,202 +929,6 @@ async def delete_telegram_account(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data == "posts:scan_high_views")
-async def scan_high_view_posts(callback: CallbackQuery) -> None:
-    await callback.answer("Парсинг запущен")
-    await ReadyPostsReporter(callback.message).send()
-
-
-class ReadyPostsReporter:
-    def __init__(self, message: Message) -> None:
-        self.message = message
-
-    async def send(self) -> None:
-        min_views_label = format_min_post_views()
-        await self.message.answer(f"Сканирую каналы и ищу Ready {min_views_label}.")
-
-        try:
-            result = await ManualPostScanner().scan_high_view_posts()
-        except Exception as error:
-            logger.exception("Ready posts scan button failed")
-            async with async_session_factory() as session:
-                await LogRepository(session).error(
-                    "ready_posts_scan_failed",
-                    str(error),
-                    payload={"exception_type": type(error).__name__},
-                )
-                await session.commit()
-            await self.message.answer(
-                "Ошибка скана. Подробности записаны в logs/app.log.",
-                reply_markup=main_menu(),
-            )
-            return
-
-        ready_posts = [
-            post
-            for post in sorted(
-                result.high_view_posts,
-                key=lambda item: item.views_count,
-                reverse=True,
-            )
-            if post.comments_available
-        ]
-        summary = (
-            f"Ready {min_views_label} готово.\n"
-            f"Каналов: {result.channels_total}, ошибок: {result.channels_failed}\n"
-            f"Проверено: {result.posts_checked}, "
-            f"{min_views_label}: {len(result.high_view_posts)}, "
-            f"ready: {len(ready_posts)}"
-        )
-        await self.message.answer(summary, reply_markup=main_menu())
-
-        if result.errors:
-            await self.message.answer("Ошибки: " + "; ".join(result.errors[:5]))
-
-        if not ready_posts:
-            return
-
-        lines = [
-            f"{post.channel_username} | {post.views_count} | {post.url}"
-            for post in ready_posts[:READY_POSTS_LIMIT]
-        ]
-        if len(ready_posts) > READY_POSTS_LIMIT:
-            lines.append(f"...ещё {len(ready_posts) - READY_POSTS_LIMIT}")
-
-        for chunk in split_messages(lines):
-            await self.message.answer(chunk)
-
-
-class OneAiSendReporter:
-    def __init__(self, message: Message) -> None:
-        self.message = message
-
-    async def send(self) -> None:
-        await self.message.answer("Запускаю одну ИИ-отправку.")
-
-        result = await AiCommentSender().send_one_per_channel()
-        sent_items = [item for item in result.items if item.status == "sent"]
-        if result.errors and not sent_items:
-            await self.message.answer(
-                "ИИ-отправка не выполнена: " + "; ".join(result.errors),
-                reply_markup=main_menu(),
-            )
-            return
-
-        summary = (
-            "ИИ-отправка завершена.\n"
-            f"Отправлено: {len(sent_items)}\n"
-            f"Постов проверено: {result.posts_checked}\n"
-            f"Дошло до ИИ: {result.posts_reached_ai}\n"
-            f"Пропущено: {result.comments_skipped}\n"
-            f"Ошибок: {result.comments_failed}\n"
-            f"Аккаунт: {result.account or '-'}"
-        )
-        if result.stopped_reason:
-            summary = f"{summary}\nОстановка: {result.stopped_reason}"
-        await self.message.answer(summary, reply_markup=main_menu())
-
-        if not sent_items:
-            return
-
-        lines = [f"sent: {item.post_url}" for item in sent_items[:AI_SEND_LIMIT]]
-        if len(sent_items) > AI_SEND_LIMIT:
-            lines.append(f"...ещё {len(sent_items) - AI_SEND_LIMIT}")
-
-        for chunk in split_messages(lines):
-            await self.message.answer(chunk)
-
-
-class AiTopicTestReporter:
-    def __init__(self, message: Message) -> None:
-        self.message = message
-
-    async def send(self) -> None:
-        await self.message.answer(
-            "Ищу случайный пост с открытыми комментариями и текстом от "
-            f"{MIN_AI_TEST_TEXT_CHARS} символов."
-        )
-
-        try:
-            result = await AiTopicTester().analyze_random_commentable_post()
-        except Exception as error:
-            logger.exception("AI topic test button failed")
-            async with async_session_factory() as session:
-                await LogRepository(session).error(
-                    "ai_topic_test_failed",
-                    str(error),
-                    payload={"exception_type": type(error).__name__},
-                )
-                await session.commit()
-            await self.message.answer(
-                "Тест ИИ не выполнен. Подробности записаны в logs/app.log.",
-                reply_markup=main_menu(),
-            )
-            return
-
-        if result.post is None:
-            reason = "; ".join(result.errors[:5]) or "подходящий пост не найден"
-            await self.message.answer(
-                (
-                    "Тест ИИ не выполнен.\n"
-                    f"Каналов: {result.channels_total}, проверено: {result.channels_attempted}\n"
-                    f"Постов проверено: {result.posts_checked}\n"
-                    f"Дошло до ИИ: {result.posts_reached_ai}\n"
-                    f"Без текста: {result.posts_without_text}\n"
-                    f"Короткий текст до {MIN_AI_TEST_TEXT_CHARS}: {result.posts_too_short}\n"
-                    f"Комментарии закрыты: {result.posts_comments_closed}\n"
-                    f"Битых каналов отключено: {result.broken_channels}\n"
-                    f"Причина: {reason}"
-                ),
-                reply_markup=main_menu(),
-            )
-            return
-
-        validation = result.post.validation
-        confidence_text = "-" if validation.confidence is None else str(validation.confidence)
-        reason = validation.reason or "-"
-        matched = validation.trigger_word or validation.matched_topic or "-"
-        status = "прошёл" if validation.passed else "не прошёл"
-        ai_used = "да" if validation.ai_used else "нет"
-        text_preview = crop_text(result.post.text, 1_500)
-        comment_validation = result.post.comment_validation or {}
-        comment_status = "-"
-        if comment_validation:
-            comment_status = (
-                "прошёл" if comment_validation.get("allowed") else "не прошёл"
-            )
-        comment_reason = comment_validation.get("reason") or "-"
-        generated_comment = result.post.generated_comment or "-"
-        answer = (
-            "Тест валидации готов.\n"
-            f"Канал: {result.post.channel_username}\n"
-            f"Пост: {result.post.url}\n"
-            f"Просмотры: {result.post.views_count or 0}\n"
-            f"Аккаунт: {result.account or '-'}\n\n"
-            "Статистика теста:\n"
-            f"Каналов проверено: {result.channels_attempted}\n"
-            f"Постов проверено: {result.posts_checked}\n"
-            f"Дошло до ИИ: {result.posts_reached_ai}\n"
-            f"Без текста: {result.posts_without_text}\n"
-            f"Коротких: {result.posts_too_short}\n"
-            f"Комментарии закрыты: {result.posts_comments_closed}\n"
-            f"Битых каналов отключено: {result.broken_channels}\n\n"
-            f"Статус: {status}\n"
-            f"Уровень: {validation.level}\n"
-            f"ИИ работал: {ai_used}\n"
-            f"Совпадение: {matched}\n"
-            f"Тема: {validation.topic or '-'}\n"
-            f"Уверенность: {confidence_text}\n"
-            f"Причина: {reason}\n\n"
-            "Dry-run комментария:\n"
-            f"{generated_comment}\n"
-            f"Проверка комментария: {comment_status}\n"
-            f"Причина проверки: {comment_reason}\n\n"
-            f"Текст поста:\n{text_preview}"
-        )
-        await self.message.answer(answer, reply_markup=main_menu())
-
-
 class TgstatImportReporter:
     def __init__(self, message: Message) -> None:
         self.message = message
@@ -1196,9 +977,9 @@ class TgstatImportReporter:
         if not result.added_usernames:
             return
 
-        lines = result.added_usernames[:READY_POSTS_LIMIT]
-        if len(result.added_usernames) > READY_POSTS_LIMIT:
-            lines.append(f"...ещё {len(result.added_usernames) - READY_POSTS_LIMIT}")
+        lines = result.added_usernames[:TGSTAT_PREVIEW_LIMIT]
+        if len(result.added_usernames) > TGSTAT_PREVIEW_LIMIT:
+            lines.append(f"...ещё {len(result.added_usernames) - TGSTAT_PREVIEW_LIMIT}")
 
         for chunk in split_messages(lines):
             await self.message.answer(chunk)
@@ -1222,10 +1003,3 @@ def split_messages(items: list[str], limit: int = TELEGRAM_MESSAGE_LIMIT) -> lis
         chunks.append(current)
 
     return chunks
-
-
-def crop_text(text: str, limit: int) -> str:
-    clean_text = text.strip()
-    if len(clean_text) <= limit:
-        return clean_text
-    return f"{clean_text[: limit - 3]}..."
