@@ -588,6 +588,23 @@ class TelegramAccountRepository:
         )
         return list(result.scalars().all())
 
+    async def list_discovery_ready(self) -> list[TelegramAccount]:
+        now = datetime.now(timezone.utc)
+        result = await self.session.execute(
+            select(TelegramAccount)
+            .where(
+                TelegramAccount.is_active.is_(True),
+                TelegramAccount.status == "active",
+                self._available_cooldown_filter(now),
+            )
+            .order_by(
+                TelegramAccount.last_used_at.is_not(None),
+                TelegramAccount.last_used_at,
+                TelegramAccount.id,
+            )
+        )
+        return list(result.scalars().all())
+
     async def get_next_cooldown_account(self) -> TelegramAccount | None:
         now = datetime.now(timezone.utc)
         result = await self.session.execute(

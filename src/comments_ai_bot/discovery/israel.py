@@ -82,7 +82,7 @@ class IsraelChannelDiscoverer:
 
         session_names = await self._get_telegram_sessions()
         if not session_names:
-            result.stopped_reason = "Нет активного Telegram-аккаунта для обнаружения каналов."
+            result.stopped_reason = "Нет активного авторизованного TG-аккаунта для поиска каналов."
             result.errors.append(result.stopped_reason)
             await self._log_result(result)
             return result
@@ -102,15 +102,17 @@ class IsraelChannelDiscoverer:
                 break
 
             username = queue.popleft()
-            session_name = session_names[account_index % len(session_names)]
+            account = session_names[account_index % len(session_names)]
             account_index += 1
 
             try:
-                async with TelegramAccountClient(session_name) as telegram:
+                async with TelegramAccountClient(account[0]) as telegram:
                     profile = await telegram.inspect_channel_for_discovery(
                         username,
                         post_limit=self.post_limit,
                     )
+                if account[1] is not None:
+                    await self._mark_account_used(account[1])
             except FloodWaitError as error:
                 seconds = getattr(error, "seconds", None)
                 result.stopped_reason = (
@@ -216,12 +218,17 @@ class IsraelChannelDiscoverer:
         async with async_session_factory() as session:
             return await ChannelRepository(session).count()
 
-    async def _get_telegram_sessions(self) -> list[str | None]:
+    async def _get_telegram_sessions(self) -> list[tuple[str | None, int | None]]:
         async with async_session_factory() as session:
-            accounts = await TelegramAccountRepository(session).list_active()
+            accounts = await TelegramAccountRepository(session).list_discovery_ready()
         if accounts:
-            return [account.session_name for account in accounts]
-        return [None]
+            return [(account.session_name, account.id) for account in accounts]
+        return [(None, None)]
+
+    async def _mark_account_used(self, account_id: int) -> None:
+        async with async_session_factory() as session:
+            await TelegramAccountRepository(session).mark_used(account_id)
+            await session.commit()
 
     async def _log_result(self, result: IsraelChannelDiscoveryResult) -> None:
         async with async_session_factory() as session:
