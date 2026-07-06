@@ -22,6 +22,8 @@ from comments_ai_bot.telegram_client.client import (
 logger = logging.getLogger(__name__)
 
 HEBREW_RE = re.compile(r"[\u0590-\u05FF]")
+DISCOVERY_PROGRESS_LOG_STEP = 25
+DISCOVERY_QUEUE_LOG_STEP = 50
 
 
 @dataclass(frozen=True)
@@ -99,6 +101,11 @@ class IsraelChannelDiscoverer:
 
         if result.channels_total_before >= self.target_total:
             result.stopped_reason = "Целевой размер базы уже достигнут."
+            logger.info(
+                "Israel channel discovery skipped: current=%s target=%s",
+                result.channels_total_before,
+                self.target_total,
+            )
             await self._log_result(result)
             return result
 
@@ -106,17 +113,24 @@ class IsraelChannelDiscoverer:
         if not session_names:
             result.stopped_reason = "Нет активного авторизованного TG-аккаунта для поиска каналов."
             result.errors.append(result.stopped_reason)
+            logger.warning("Israel channel discovery stopped: no active authorized TG account")
             await self._log_result(result)
             return result
 
         queue, seen = self._build_initial_queue()
         result.seed_channels = len(queue)
         result.search_queries = len(self.search_queries)
+        logger.info(
+            "Israel discovery initial queue prepared: seeds=%s accounts=%s",
+            result.seed_channels,
+            len(session_names),
+        )
 
         await self._add_search_candidates(queue, seen, session_names, result)
         if not queue:
             result.stopped_reason = "Не найдены стартовые кандидаты для израильского поиска."
             result.errors.append(result.stopped_reason)
+            logger.warning("Israel channel discovery stopped: no initial candidates")
             await self._log_result(result)
             return result
 
@@ -130,6 +144,12 @@ class IsraelChannelDiscoverer:
             account = session_names[account_index % len(session_names)]
             account_index += 1
 
+            logger.info(
+                "Israel discovery inspecting: username=%s depth=%s queue_left=%s",
+                candidate.username,
+                candidate.depth,
+                len(queue),
+            )
             try:
                 async with TelegramAccountClient(account[0]) as telegram:
                     profile = await telegram.inspect_channel_for_discovery(
@@ -157,10 +177,23 @@ class IsraelChannelDiscoverer:
             result.scanned_channels += 1
             if not self._is_israel_profile(profile):
                 result.channels_skipped += 1
+                logger.info(
+                    "Israel discovery rejected: username=%s depth=%s reason=no_israel_markers",
+                    candidate.username,
+                    candidate.depth,
+                )
                 continue
 
             result.matched_channels += 1
             await self._add_channel(profile, result)
+            logger.info(
+                "Israel discovery matched: username=%s depth=%s title=%s mentions=%s forwarded=%s",
+                profile.username,
+                candidate.depth,
+                profile.title or "-",
+                len(profile.mentioned_usernames),
+                len(profile.forwarded_usernames),
+            )
 
             if candidate.depth >= self.max_depth:
                 continue
@@ -168,10 +201,37 @@ class IsraelChannelDiscoverer:
             for mentioned_username in profile.mentioned_usernames:
                 if self._append_candidate(queue, seen, mentioned_username, candidate.depth + 1):
                     result.discovered_mentions += 1
+                    self._log_queue_progress(
+                        "mention",
+                        result.discovered_mentions,
+                        queue,
+                        candidate.depth + 1,
+                    )
 
             for forwarded_username in profile.forwarded_usernames:
                 if self._append_candidate(queue, seen, forwarded_username, candidate.depth + 1):
                     result.forwarded_mentions += 1
+                    self._log_queue_progress(
+                        "forwarded",
+                        result.forwarded_mentions,
+                        queue,
+                        candidate.depth + 1,
+                    )
+
+            if result.scanned_channels % DISCOVERY_PROGRESS_LOG_STEP == 0:
+                logger.info(
+                    "Israel discovery progress: scanned=%s matched=%s added=%s existing=%s "
+                    "skipped=%s queue=%s search=%s mentions=%s forwarded=%s",
+                    result.scanned_channels,
+                    result.matched_channels,
+                    result.channels_added,
+                    result.channels_existing,
+                    result.channels_skipped,
+                    len(queue),
+                    result.search_candidates,
+                    result.discovered_mentions,
+                    result.forwarded_mentions,
+                )
 
         if result.stopped_reason is None:
             result.stopped_reason = (
@@ -217,6 +277,11 @@ class IsraelChannelDiscoverer:
         if not self.search_queries:
             return
 
+        logger.info(
+            "Israel discovery Telegram Search started: queries=%s limit=%s",
+            len(self.search_queries),
+            self.search_limit,
+        )
         account_index = 0
         for query in self.search_queries:
             account = session_names[account_index % len(session_names)]
@@ -244,9 +309,19 @@ class IsraelChannelDiscoverer:
                 logger.info("Israel discovery search skipped %s: %s", query, error)
                 continue
 
+            added = 0
             for username in usernames:
                 if self._append_candidate(queue, seen, username, 0):
                     result.search_candidates += 1
+                    added += 1
+            logger.info(
+                "Israel discovery search query done: query=%s found=%s added=%s total_search_candidates=%s queue=%s",
+                query,
+                len(usernames),
+                added,
+                result.search_candidates,
+                len(queue),
+            )
 
     def _append_candidate(
         self,
@@ -262,6 +337,22 @@ class IsraelChannelDiscoverer:
         seen.add(normalized)
         queue.append(DiscoveryCandidate(normalized, depth))
         return True
+
+    def _log_queue_progress(
+        self,
+        source: str,
+        count: int,
+        queue: deque[DiscoveryCandidate],
+        depth: int,
+    ) -> None:
+        if count == 1 or count % DISCOVERY_QUEUE_LOG_STEP == 0:
+            logger.info(
+                "Israel discovery queue expanded: source=%s total=%s depth=%s queue=%s",
+                source,
+                count,
+                depth,
+                len(queue),
+            )
 
     def _is_israel_profile(self, profile: TelegramChannelDiscoveryProfile) -> bool:
         text = " ".join(
@@ -292,10 +383,17 @@ class IsraelChannelDiscoverer:
 
         if existing:
             result.channels_existing += 1
+            logger.info("Israel discovery channel already exists: username=%s", profile.username)
             return
 
         result.channels_added += 1
         result.added_usernames.append(channel.username)
+        logger.info(
+            "Israel discovery channel added: username=%s title=%s total_added=%s",
+            channel.username,
+            channel.title or "-",
+            result.channels_added,
+        )
 
     async def _count_channels(self) -> int:
         async with async_session_factory() as session:
