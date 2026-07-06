@@ -23,6 +23,7 @@ def setup_logging() -> None:
 
     root_logger = logging.getLogger()
     level = getattr(logging, settings.log_level.upper(), logging.INFO)
+    file_level = min(level, logging.INFO)
     root_logger.setLevel(level)
 
     formatter = logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT)
@@ -48,8 +49,16 @@ def setup_logging() -> None:
             encoding="utf-8",
         )
         file_handler.setFormatter(formatter)
-        file_handler.setLevel(level)
+        file_handler.setLevel(file_level)
         root_logger.addHandler(file_handler)
+
+    for handler in root_logger.handlers:
+        if (
+            isinstance(handler, RotatingFileHandler)
+            and Path(handler.baseFilename) == LOG_FILE.resolve()
+        ):
+            handler.setLevel(file_level)
+            handler.setFormatter(formatter)
 
     for logger_name in NOISY_LOGGERS:
         logging.getLogger(logger_name).setLevel(logging.WARNING)
