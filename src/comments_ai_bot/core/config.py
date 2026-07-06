@@ -296,12 +296,31 @@ class Settings:
         return int(_getenv("ISRAEL_DISCOVERY_POST_LIMIT", "30") or "30")
 
     @property
+    def israel_discovery_search_limit(self) -> int:
+        return int(_getenv("ISRAEL_DISCOVERY_SEARCH_LIMIT", "30") or "30")
+
+    @property
+    def israel_discovery_max_depth(self) -> int:
+        return int(_getenv("ISRAEL_DISCOVERY_MAX_DEPTH", "2") or "2")
+
+    @property
     def israel_discovery_seed_channels(self) -> list[str]:
         value = _getenv(
             "ISRAEL_DISCOVERY_SEED_CHANNELS",
             (
                 "@N12News,@ynetalerts,@kann_news,@NewsIsrael13,@IsraelHayomHeb,"
                 "@MaarivOnline,@WallaNews,@rotter_net,@amitsegal,@abualiexpress"
+            ),
+        )
+        return [item.strip() for item in (value or "").split(",") if item.strip()]
+
+    @property
+    def israel_discovery_search_queries(self) -> list[str]:
+        value = _getenv(
+            "ISRAEL_DISCOVERY_SEARCH_QUERIES",
+            (
+                "ישראל,חדשות,תל אביב,חיפה,ירושלים,אשדוד,נתניה,באר שבע,"
+                "Израиль,Тель Авив,Хайфа,Иерусалим,Israel,Tel Aviv,Haifa,Jerusalem"
             ),
         )
         return [item.strip() for item in (value or "").split(",") if item.strip()]

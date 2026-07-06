@@ -7,8 +7,9 @@ import re
 
 from telethon import TelegramClient, errors
 from telethon.tl.functions.channels import GetFullChannelRequest
+from telethon.tl.functions.contacts import SearchRequest
 from telethon.tl.custom.message import Message
-from telethon.tl.types import Channel, InputPeerChannel
+from telethon.tl.types import Channel, InputPeerChannel, PeerChannel
 
 from comments_ai_bot.core.config import settings
 from comments_ai_bot.db.repositories import ChannelRepository
@@ -59,6 +60,7 @@ class TelegramChannelDiscoveryProfile:
     about: str | None
     recent_texts: tuple[str, ...]
     mentioned_usernames: tuple[str, ...]
+    forwarded_usernames: tuple[str, ...]
 
 
 class TelegramAccountClient:
@@ -144,6 +146,7 @@ class TelegramAccountClient:
         )
         title = getattr(entity, "title", None)
         mentioned_usernames = self._extract_mentioned_usernames(title, about, recent_texts)
+        forwarded_usernames = await self._extract_forwarded_usernames(messages)
 
         return TelegramChannelDiscoveryProfile(
             username=channel_username,
@@ -151,7 +154,22 @@ class TelegramAccountClient:
             about=about,
             recent_texts=recent_texts,
             mentioned_usernames=mentioned_usernames,
+            forwarded_usernames=forwarded_usernames,
         )
+
+    async def search_public_channels(self, query: str, *, limit: int = 20) -> tuple[str, ...]:
+        result = await self.client(SearchRequest(q=query, limit=limit))
+        usernames: dict[str, None] = {}
+        for chat in getattr(result, "chats", []):
+            if not isinstance(chat, Channel):
+                continue
+            if not bool(getattr(chat, "broadcast", False)):
+                continue
+            username = getattr(chat, "username", None)
+            if not username:
+                continue
+            usernames[f"@{username}"] = None
+        return tuple(usernames)
 
     def _collapse_grouped_messages(self, messages: list[Message]) -> list[TelegramPost]:
         grouped_messages: dict[int, list[Message]] = {}
@@ -219,6 +237,43 @@ class TelegramAccountClient:
             for match in USERNAME_IN_TEXT_RE.finditer(text):
                 mentions[f"@{match.group(1)}"] = None
         return tuple(mentions)
+
+    async def _extract_forwarded_usernames(self, messages: list[Message]) -> tuple[str, ...]:
+        usernames: dict[str, None] = {}
+        for message in messages:
+            username = await self._forwarded_username(message)
+            if username:
+                usernames[username] = None
+        return tuple(usernames)
+
+    async def _forwarded_username(self, message: Message) -> str | None:
+        forward_sender = getattr(message, "forward", None)
+        chat = getattr(forward_sender, "chat", None)
+        username = getattr(chat, "username", None)
+        if username:
+            return f"@{username}"
+
+        get_forward_sender = getattr(message, "get_forward_sender", None)
+        if callable(get_forward_sender):
+            try:
+                sender = await get_forward_sender()
+                username = getattr(sender, "username", None)
+                if isinstance(sender, Channel) and username:
+                    return f"@{username}"
+            except (errors.RPCError, ValueError, TypeError, AttributeError):
+                pass
+
+        from_id = getattr(getattr(message, "fwd_from", None), "from_id", None)
+        if isinstance(from_id, PeerChannel):
+            try:
+                entity = await self.client.get_entity(from_id)
+            except (errors.RPCError, ValueError, TypeError):
+                return None
+            username = getattr(entity, "username", None)
+            if isinstance(entity, Channel) and username:
+                return f"@{username}"
+
+        return None
 
     async def _get_broadcast_channel(self, channel_username: str) -> Channel | InputPeerChannel:
         cached_entity = await self._get_cached_channel_entity(channel_username)
