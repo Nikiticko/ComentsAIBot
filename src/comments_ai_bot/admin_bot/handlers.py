@@ -37,7 +37,7 @@ from comments_ai_bot.db.repositories import (
     TelegramAccountRepository,
 )
 from comments_ai_bot.db.session import async_session_factory
-from comments_ai_bot.discovery.tgstat import TgstatChannelImporter
+from comments_ai_bot.discovery.israel import IsraelChannelDiscoverer
 from comments_ai_bot.publishing.mailing import mailing_automation
 from comments_ai_bot.telegram_client.auth import (
     copy_legacy_session_files,
@@ -187,7 +187,7 @@ async def list_channels(callback: CallbackQuery) -> None:
 
 @router.message(F.text == AUTO_ADD_CHANNELS)
 async def auto_add_channels_from_tgstat(message: Message) -> None:
-    await TgstatImportReporter(message).send()
+    await IsraelDiscoveryReporter(message).send()
 
 
 async def send_channel_list(message: Message) -> None:
@@ -929,45 +929,46 @@ async def delete_telegram_account(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-class TgstatImportReporter:
+class IsraelDiscoveryReporter:
     def __init__(self, message: Message) -> None:
         self.message = message
 
     async def send(self) -> None:
         await self.message.answer(
-            "Добираю базу израильских каналов из TGStat до целевого объёма."
+            "Добираю базу израильских каналов от seed-каналов."
         )
 
         try:
-            result = await TgstatChannelImporter(target_total=10_000).import_public_channels()
+            result = await IsraelChannelDiscoverer().discover()
         except Exception as error:
-            logger.exception("TGStat channel import failed")
+            logger.exception("Israel channel discovery failed")
             async with async_session_factory() as session:
                 await LogRepository(session).error(
-                    "tgstat_channels_import_failed",
+                    "israel_channel_discovery_failed",
                     str(error),
                     payload={"exception_type": type(error).__name__},
                 )
                 await session.commit()
             await self.message.answer(
-                "Импорт TGStat не выполнен. "
+                "Импорт израильских каналов не выполнен. "
                 "Подробности записаны в logs/app.log.",
                 reply_markup=main_menu(),
             )
             return
 
         summary = (
-            "Импорт израильских TGStat-каналов завершён.\n"
+            "Импорт израильских каналов завершён.\n"
             f"Цель в базе: {result.target_total}\n"
             f"Было каналов: {result.channels_total_before}\n"
             f"Стало каналов: {result.channels_total_after}\n"
-            f"Источников: {result.sources_checked}\n"
-            f"Страниц: {result.pages_checked}, "
-            f"ошибок страниц: {result.pages_failed}\n"
-            f"Найдено username: {result.candidates_found}\n"
+            f"Seed-каналов: {result.seed_channels}\n"
+            f"Проверено: {result.scanned_channels}\n"
+            f"Подошло: {result.matched_channels}\n"
+            f"Найдено упоминаний: {result.discovered_mentions}\n"
             f"Добавлено: {result.channels_added}\n"
             f"Уже было: {result.channels_existing}\n"
-            f"Пропущено: {result.channels_skipped}"
+            f"Пропущено: {result.channels_skipped}\n"
+            f"Остановка: {result.stopped_reason or '-'}"
         )
         await self.message.answer(summary, reply_markup=main_menu())
 

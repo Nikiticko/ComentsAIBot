@@ -283,6 +283,29 @@ class Settings:
         )
         return [item.strip().casefold() for item in (value or "").split(",") if item.strip()]
 
+    @property
+    def israel_discovery_target_channels(self) -> int:
+        return int(_getenv("ISRAEL_DISCOVERY_TARGET_CHANNELS", "10000") or "10000")
+
+    @property
+    def israel_discovery_max_scanned_channels(self) -> int:
+        return int(_getenv("ISRAEL_DISCOVERY_MAX_SCANNED_CHANNELS", "2000") or "2000")
+
+    @property
+    def israel_discovery_post_limit(self) -> int:
+        return int(_getenv("ISRAEL_DISCOVERY_POST_LIMIT", "30") or "30")
+
+    @property
+    def israel_discovery_seed_channels(self) -> list[str]:
+        value = _getenv(
+            "ISRAEL_DISCOVERY_SEED_CHANNELS",
+            (
+                "@N12News,@ynetalerts,@kann_news,@NewsIsrael13,@IsraelHayomHeb,"
+                "@MaarivOnline,@WallaNews,@rotter_net,@amitsegal,@abualiexpress"
+            ),
+        )
+        return [item.strip() for item in (value or "").split(",") if item.strip()]
+
 
 @lru_cache
 def get_settings() -> Settings:

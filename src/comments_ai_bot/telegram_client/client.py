@@ -3,8 +3,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
 from pathlib import Path
+import re
 
 from telethon import TelegramClient, errors
+from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.custom.message import Message
 from telethon.tl.types import Channel, InputPeerChannel
 
@@ -23,6 +25,7 @@ MISSING_ENTITY_MARKERS = (
     "cannot find any entity corresponding",
     "nobody is using this username",
 )
+USERNAME_IN_TEXT_RE = re.compile(r"(?<![A-Za-z0-9_])@([A-Za-z0-9_]{5,32})(?![A-Za-z0-9_])")
 
 
 def is_missing_username_error(error: Exception) -> bool:
@@ -47,6 +50,15 @@ class CommentAvailability:
     available: bool
     reason: str | None = None
     post_id: int | None = None
+
+
+@dataclass(frozen=True)
+class TelegramChannelDiscoveryProfile:
+    username: str
+    title: str | None
+    about: str | None
+    recent_texts: tuple[str, ...]
+    mentioned_usernames: tuple[str, ...]
 
 
 class TelegramAccountClient:
@@ -115,6 +127,32 @@ class TelegramAccountClient:
         )
         return posts
 
+    async def inspect_channel_for_discovery(
+        self,
+        channel_username: str,
+        *,
+        post_limit: int = 30,
+    ) -> TelegramChannelDiscoveryProfile:
+        entity = await self._get_broadcast_channel(channel_username)
+        full_channel = await self.client(GetFullChannelRequest(entity))
+        about = getattr(full_channel.full_chat, "about", None)
+        messages: list[Message] = await self.client.get_messages(entity, limit=post_limit)
+        recent_texts = tuple(
+            message.message
+            for message in messages
+            if message.message and not message.action
+        )
+        title = getattr(entity, "title", None)
+        mentioned_usernames = self._extract_mentioned_usernames(title, about, recent_texts)
+
+        return TelegramChannelDiscoveryProfile(
+            username=channel_username,
+            title=title,
+            about=about,
+            recent_texts=recent_texts,
+            mentioned_usernames=mentioned_usernames,
+        )
+
     def _collapse_grouped_messages(self, messages: list[Message]) -> list[TelegramPost]:
         grouped_messages: dict[int, list[Message]] = {}
         standalone_posts: list[TelegramPost] = []
@@ -167,6 +205,20 @@ class TelegramAccountClient:
 
     def _has_comment_thread(self, message: Message) -> bool:
         return bool(message.replies and getattr(message.replies, "comments", False))
+
+    def _extract_mentioned_usernames(
+        self,
+        title: str | None,
+        about: str | None,
+        recent_texts: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        mentions: dict[str, None] = {}
+        for text in (title, about, *recent_texts):
+            if not text:
+                continue
+            for match in USERNAME_IN_TEXT_RE.finditer(text):
+                mentions[f"@{match.group(1)}"] = None
+        return tuple(mentions)
 
     async def _get_broadcast_channel(self, channel_username: str) -> Channel | InputPeerChannel:
         cached_entity = await self._get_cached_channel_entity(channel_username)

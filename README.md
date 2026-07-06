@@ -54,10 +54,15 @@ python scripts/auth_telegram.py
 
 Скрипт попросит номер телефона, код Telegram и пароль 2FA, если он включён. После этого сессия сохранится в `data`.
 
-Кнопка `Израиль TGStat` добирает базу до целевого количества израильских каналов
-из публичных рейтингов TGStat по нескольким категориям и сортировкам. Кандидаты
-фильтруются по израильским ключевым словам в username/названии канала.
-HTTP-страницы TGStat грузятся параллельно, а username добавляются в базу без Telethon-проверки, чтобы не ловить
+Кнопка `Израиль каналы` добирает базу от seed-каналов через обычный Telegram-аккаунт:
+читает описание и последние посты, ищет упоминания публичных `@username`, проверяет
+иврит и израильские маркеры, затем добавляет подходящие каналы в базу.
+Лимиты можно менять переменными `ISRAEL_DISCOVERY_TARGET_CHANNELS`,
+`ISRAEL_DISCOVERY_MAX_SCANNED_CHANNELS`, `ISRAEL_DISCOVERY_POST_LIMIT`,
+`ISRAEL_DISCOVERY_SEED_CHANNELS`.
+
+TGStat-импорт оставлен как вспомогательный источник. HTTP-страницы TGStat грузятся
+параллельно, а username добавляются в базу без Telethon-проверки, чтобы не ловить
 Telegram FloodWait на массовом ResolveUsername. Лимиты можно менять переменными
 `TGSTAT_IMPORT_TARGET_CHANNELS`, `TGSTAT_IMPORT_MAX_PAGES`, `TGSTAT_IMPORT_MAX_CHANNELS`,
 `TGSTAT_IMPORT_CONCURRENCY`, `TGSTAT_IMPORT_CATEGORIES`, `TGSTAT_IMPORT_SORTS`,
