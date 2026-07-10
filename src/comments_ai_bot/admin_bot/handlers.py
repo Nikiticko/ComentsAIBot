@@ -969,9 +969,13 @@ class IsraelDiscoveryReporter:
             f"Найдено упоминаний: {result.discovered_mentions}\n"
             f"Найдено пересылок: {result.forwarded_mentions}\n"
             f"Глубина: {result.max_depth}\n"
+            f"Мин. просмотров: {result.min_views}\n"
             f"Добавлено: {result.channels_added}\n"
             f"Уже было: {result.channels_existing}\n"
             f"Пропущено: {result.channels_skipped}\n"
+            f"Без открытых комментариев: {result.channels_without_open_comments}\n"
+            f"Мало просмотров: {result.channels_with_low_views}\n"
+            f"Нерабочих TG-аккаунтов: {result.unusable_accounts}\n"
             f"Остановка: {result.stopped_reason or '-'}"
         )
         await self.message.answer(summary, reply_markup=main_menu())

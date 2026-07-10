@@ -285,23 +285,27 @@ class Settings:
 
     @property
     def israel_discovery_target_channels(self) -> int:
-        return int(_getenv("ISRAEL_DISCOVERY_TARGET_CHANNELS", "10000") or "10000")
+        return int(_getenv("ISRAEL_DISCOVERY_TARGET_CHANNELS", "1000") or "1000")
 
     @property
     def israel_discovery_max_scanned_channels(self) -> int:
-        return int(_getenv("ISRAEL_DISCOVERY_MAX_SCANNED_CHANNELS", "2000") or "2000")
+        return int(_getenv("ISRAEL_DISCOVERY_MAX_SCANNED_CHANNELS", "10000") or "10000")
 
     @property
     def israel_discovery_post_limit(self) -> int:
-        return int(_getenv("ISRAEL_DISCOVERY_POST_LIMIT", "30") or "30")
+        return int(_getenv("ISRAEL_DISCOVERY_POST_LIMIT", "50") or "50")
+
+    @property
+    def israel_discovery_min_views(self) -> int:
+        return int(_getenv("ISRAEL_DISCOVERY_MIN_VIEWS", "1000") or "1000")
 
     @property
     def israel_discovery_search_limit(self) -> int:
-        return int(_getenv("ISRAEL_DISCOVERY_SEARCH_LIMIT", "30") or "30")
+        return int(_getenv("ISRAEL_DISCOVERY_SEARCH_LIMIT", "100") or "100")
 
     @property
     def israel_discovery_max_depth(self) -> int:
-        return int(_getenv("ISRAEL_DISCOVERY_MAX_DEPTH", "2") or "2")
+        return int(_getenv("ISRAEL_DISCOVERY_MAX_DEPTH", "3") or "3")
 
     @property
     def israel_discovery_seed_channels(self) -> list[str]:
@@ -320,7 +324,12 @@ class Settings:
             "ISRAEL_DISCOVERY_SEARCH_QUERIES",
             (
                 "ישראל,חדשות,תל אביב,חיפה,ירושלים,אשדוד,נתניה,באר שבע,"
-                "Израиль,Тель Авив,Хайфа,Иерусалим,Israel,Tel Aviv,Haifa,Jerusalem"
+                "ראשון לציון,פתח תקווה,רמת גן,הרצליה,אילת,ישראלים,"
+                "עסקים ישראל,ספורט ישראל,תרבות ישראל,אוכל ישראל,"
+                "Израиль,Тель Авив,Хайфа,Иерусалим,Ашдод,Нетания,Бат Ям,"
+                "Холон,Ришон,Петах Тиква,репатриация Израиль,новости Израиля,"
+                "Israel,Tel Aviv,Haifa,Jerusalem,Ashdod,Netanya,Beer Sheva,"
+                "Israeli news,Israel business,Israel sport,Israel food"
             ),
         )
         return [item.strip() for item in (value or "").split(",") if item.strip()]

@@ -59,8 +59,10 @@ python scripts/auth_telegram.py
 иврит и израильские маркеры, затем добавляет подходящие каналы в базу.
 Лимиты можно менять переменными `ISRAEL_DISCOVERY_TARGET_CHANNELS`,
 `ISRAEL_DISCOVERY_MAX_SCANNED_CHANNELS`, `ISRAEL_DISCOVERY_POST_LIMIT`,
-`ISRAEL_DISCOVERY_SEARCH_LIMIT`, `ISRAEL_DISCOVERY_MAX_DEPTH`,
+`ISRAEL_DISCOVERY_MIN_VIEWS`, `ISRAEL_DISCOVERY_SEARCH_LIMIT`, `ISRAEL_DISCOVERY_MAX_DEPTH`,
 `ISRAEL_DISCOVERY_SEED_CHANNELS`, `ISRAEL_DISCOVERY_SEARCH_QUERIES`.
+Канал добавляется только если найден свежий пост с открытыми комментариями и
+просмотрами не ниже `ISRAEL_DISCOVERY_MIN_VIEWS`.
 
 TGStat-импорт оставлен как вспомогательный источник. HTTP-страницы TGStat грузятся
 параллельно, а username добавляются в базу без Telethon-проверки, чтобы не ловить

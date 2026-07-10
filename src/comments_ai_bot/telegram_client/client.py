@@ -61,6 +61,10 @@ class TelegramChannelDiscoveryProfile:
     recent_texts: tuple[str, ...]
     mentioned_usernames: tuple[str, ...]
     forwarded_usernames: tuple[str, ...]
+    commentable_posts: int = 0
+    eligible_post_id: int | None = None
+    eligible_post_views: int | None = None
+    max_recent_views: int = 0
 
 
 class TelegramAccountClient:
@@ -134,6 +138,7 @@ class TelegramAccountClient:
         channel_username: str,
         *,
         post_limit: int = 30,
+        min_views: int = 0,
     ) -> TelegramChannelDiscoveryProfile:
         entity = await self._get_broadcast_channel(channel_username)
         full_channel = await self.client(GetFullChannelRequest(entity))
@@ -147,6 +152,19 @@ class TelegramAccountClient:
         title = getattr(entity, "title", None)
         mentioned_usernames = self._extract_mentioned_usernames(title, about, recent_texts)
         forwarded_usernames = await self._extract_forwarded_usernames(messages)
+        commentable_messages = [
+            message
+            for message in messages
+            if not message.action and self._has_comment_thread(message)
+        ]
+        eligible_message = next(
+            (
+                message
+                for message in commentable_messages
+                if (message.views or 0) >= min_views
+            ),
+            None,
+        )
 
         return TelegramChannelDiscoveryProfile(
             username=channel_username,
@@ -155,6 +173,10 @@ class TelegramAccountClient:
             recent_texts=recent_texts,
             mentioned_usernames=mentioned_usernames,
             forwarded_usernames=forwarded_usernames,
+            commentable_posts=len(commentable_messages),
+            eligible_post_id=eligible_message.id if eligible_message else None,
+            eligible_post_views=eligible_message.views if eligible_message else None,
+            max_recent_views=max((message.views or 0 for message in messages), default=0),
         )
 
     async def search_public_channels(self, query: str, *, limit: int = 20) -> tuple[str, ...]:

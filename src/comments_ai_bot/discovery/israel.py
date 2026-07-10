@@ -32,6 +32,12 @@ class DiscoveryCandidate:
     depth: int
 
 
+@dataclass(frozen=True)
+class DiscoverySession:
+    session_name: str | None
+    account_id: int | None
+
+
 @dataclass
 class IsraelChannelDiscoveryResult:
     target_total: int = 0
@@ -45,9 +51,13 @@ class IsraelChannelDiscoveryResult:
     discovered_mentions: int = 0
     forwarded_mentions: int = 0
     max_depth: int = 0
+    min_views: int = 0
     channels_added: int = 0
     channels_existing: int = 0
     channels_skipped: int = 0
+    channels_without_open_comments: int = 0
+    channels_with_low_views: int = 0
+    unusable_accounts: int = 0
     errors: list[str] = field(default_factory=list)
     added_usernames: list[str] = field(default_factory=list)
     stopped_reason: str | None = None
@@ -62,6 +72,7 @@ class IsraelChannelDiscoverer:
         post_limit: int | None = None,
         search_limit: int | None = None,
         max_depth: int | None = None,
+        min_views: int | None = None,
         seed_channels: list[str] | None = None,
         search_queries: list[str] | None = None,
         keywords: list[str] | None = None,
@@ -73,6 +84,7 @@ class IsraelChannelDiscoverer:
         self.post_limit = post_limit or settings.israel_discovery_post_limit
         self.search_limit = search_limit or settings.israel_discovery_search_limit
         self.max_depth = max_depth if max_depth is not None else settings.israel_discovery_max_depth
+        self.min_views = min_views if min_views is not None else settings.israel_discovery_min_views
         self.seed_channels = seed_channels or settings.israel_discovery_seed_channels
         self.search_queries = search_queries or settings.israel_discovery_search_queries
         self.keywords = keywords if keywords is not None else settings.tgstat_import_keywords
@@ -81,18 +93,21 @@ class IsraelChannelDiscoverer:
         result = IsraelChannelDiscoveryResult(
             target_total=self.target_total,
             max_depth=self.max_depth,
+            min_views=self.min_views,
         )
         result.channels_total_before = await self._count_channels()
         result.channels_total_after = result.channels_total_before
 
         logger.info(
             "Israel channel discovery started: target=%s current=%s seeds=%s "
-            "max_scanned=%s post_limit=%s search_queries=%s search_limit=%s max_depth=%s keywords=%s",
+            "max_scanned=%s post_limit=%s min_views=%s search_queries=%s "
+            "search_limit=%s max_depth=%s keywords=%s",
             self.target_total,
             result.channels_total_before,
             len(self.seed_channels),
             self.max_scanned_channels,
             self.post_limit,
+            self.min_views,
             len(self.search_queries),
             self.search_limit,
             self.max_depth,
@@ -109,8 +124,8 @@ class IsraelChannelDiscoverer:
             await self._log_result(result)
             return result
 
-        session_names = await self._get_telegram_sessions()
-        if not session_names:
+        sessions = await self._get_authorized_telegram_sessions(result)
+        if not sessions:
             result.stopped_reason = "Нет активного авторизованного TG-аккаунта для поиска каналов."
             result.errors.append(result.stopped_reason)
             logger.warning("Israel channel discovery stopped: no active authorized TG account")
@@ -123,10 +138,10 @@ class IsraelChannelDiscoverer:
         logger.info(
             "Israel discovery initial queue prepared: seeds=%s accounts=%s",
             result.seed_channels,
-            len(session_names),
+            len(sessions),
         )
 
-        await self._add_search_candidates(queue, seen, session_names, result)
+        await self._add_search_candidates(queue, seen, sessions, result)
         if not queue:
             result.stopped_reason = "Не найдены стартовые кандидаты для израильского поиска."
             result.errors.append(result.stopped_reason)
@@ -141,7 +156,7 @@ class IsraelChannelDiscoverer:
                 break
 
             candidate = queue.popleft()
-            account = session_names[account_index % len(session_names)]
+            account = sessions[account_index % len(sessions)]
             account_index += 1
 
             logger.info(
@@ -151,13 +166,14 @@ class IsraelChannelDiscoverer:
                 len(queue),
             )
             try:
-                async with TelegramAccountClient(account[0]) as telegram:
+                async with TelegramAccountClient(account.session_name) as telegram:
                     profile = await telegram.inspect_channel_for_discovery(
                         candidate.username,
                         post_limit=self.post_limit,
+                        min_views=self.min_views,
                     )
-                if account[1] is not None:
-                    await self._mark_account_used(account[1])
+                if account.account_id is not None:
+                    await self._mark_account_used(account.account_id)
             except FloodWaitError as error:
                 seconds = getattr(error, "seconds", None)
                 result.stopped_reason = (
@@ -171,7 +187,8 @@ class IsraelChannelDiscoverer:
                 result.channels_skipped += 1
                 if not is_missing_username_error(error):
                     result.errors.append(f"{candidate.username}: {error}")
-                logger.info("Israel discovery skipped %s: %s", candidate.username, error)
+                await self._handle_runtime_account_error(account, error, result)
+                logger.warning("Israel discovery skipped %s: %s", candidate.username, error)
                 continue
 
             result.scanned_channels += 1
@@ -183,14 +200,41 @@ class IsraelChannelDiscoverer:
                     candidate.depth,
                 )
                 continue
+            if profile.commentable_posts <= 0:
+                result.channels_skipped += 1
+                result.channels_without_open_comments += 1
+                logger.info(
+                    "Israel discovery rejected: username=%s depth=%s reason=no_open_comments max_views=%s",
+                    candidate.username,
+                    candidate.depth,
+                    profile.max_recent_views,
+                )
+                continue
+            if profile.eligible_post_id is None:
+                result.channels_skipped += 1
+                result.channels_with_low_views += 1
+                logger.info(
+                    "Israel discovery rejected: username=%s depth=%s reason=low_views "
+                    "commentable_posts=%s max_views=%s min_views=%s",
+                    candidate.username,
+                    candidate.depth,
+                    profile.commentable_posts,
+                    profile.max_recent_views,
+                    self.min_views,
+                )
+                continue
 
             result.matched_channels += 1
             await self._add_channel(profile, result)
             logger.info(
-                "Israel discovery matched: username=%s depth=%s title=%s mentions=%s forwarded=%s",
+                "Israel discovery matched: username=%s depth=%s title=%s views=%s "
+                "post_id=%s comments=%s mentions=%s forwarded=%s",
                 profile.username,
                 candidate.depth,
                 profile.title or "-",
+                profile.eligible_post_views,
+                profile.eligible_post_id,
+                profile.commentable_posts,
                 len(profile.mentioned_usernames),
                 len(profile.forwarded_usernames),
             )
@@ -271,7 +315,7 @@ class IsraelChannelDiscoverer:
         self,
         queue: deque[DiscoveryCandidate],
         seen: set[str],
-        session_names: list[tuple[str | None, int | None]],
+        sessions: list[DiscoverySession],
         result: IsraelChannelDiscoveryResult,
     ) -> None:
         if not self.search_queries:
@@ -284,16 +328,16 @@ class IsraelChannelDiscoverer:
         )
         account_index = 0
         for query in self.search_queries:
-            account = session_names[account_index % len(session_names)]
+            account = sessions[account_index % len(sessions)]
             account_index += 1
             try:
-                async with TelegramAccountClient(account[0]) as telegram:
+                async with TelegramAccountClient(account.session_name) as telegram:
                     usernames = await telegram.search_public_channels(
                         query,
                         limit=self.search_limit,
                     )
-                if account[1] is not None:
-                    await self._mark_account_used(account[1])
+                if account.account_id is not None:
+                    await self._mark_account_used(account.account_id)
             except FloodWaitError as error:
                 seconds = getattr(error, "seconds", None)
                 message = (
@@ -306,7 +350,8 @@ class IsraelChannelDiscoverer:
                 return
             except (RPCError, ValueError, RuntimeError) as error:
                 result.errors.append(f"search {query}: {error}")
-                logger.info("Israel discovery search skipped %s: %s", query, error)
+                await self._handle_runtime_account_error(account, error, result)
+                logger.warning("Israel discovery search skipped %s: %s", query, error)
                 continue
 
             added = 0
@@ -399,16 +444,62 @@ class IsraelChannelDiscoverer:
         async with async_session_factory() as session:
             return await ChannelRepository(session).count()
 
-    async def _get_telegram_sessions(self) -> list[tuple[str | None, int | None]]:
+    async def _get_authorized_telegram_sessions(
+        self,
+        result: IsraelChannelDiscoveryResult,
+    ) -> list[DiscoverySession]:
         async with async_session_factory() as session:
             accounts = await TelegramAccountRepository(session).list_discovery_ready()
+        raw_sessions = [DiscoverySession(account.session_name, account.id) for account in accounts]
         if accounts:
-            return [(account.session_name, account.id) for account in accounts]
-        return [(None, None)]
+            return await self._filter_authorized_sessions(raw_sessions, result)
+        return await self._filter_authorized_sessions([DiscoverySession(None, None)], result)
+
+    async def _filter_authorized_sessions(
+        self,
+        sessions: list[DiscoverySession],
+        result: IsraelChannelDiscoveryResult,
+    ) -> list[DiscoverySession]:
+        authorized_sessions: list[DiscoverySession] = []
+        for session in sessions:
+            try:
+                async with TelegramAccountClient(session.session_name):
+                    pass
+            except (RPCError, ValueError, RuntimeError) as error:
+                result.unusable_accounts += 1
+                message = self._format_session_error(session, error)
+                result.errors.append(message)
+                logger.warning("Israel discovery account skipped: %s", message)
+                if session.account_id is not None:
+                    await self._mark_account_error(session.account_id, str(error))
+                continue
+            authorized_sessions.append(session)
+        return authorized_sessions
+
+    async def _handle_runtime_account_error(
+        self,
+        account: DiscoverySession,
+        error: Exception,
+        result: IsraelChannelDiscoveryResult,
+    ) -> None:
+        if "не авторизован" not in str(error).casefold():
+            return
+        result.unusable_accounts += 1
+        if account.account_id is not None:
+            await self._mark_account_error(account.account_id, str(error))
+
+    def _format_session_error(self, session: DiscoverySession, error: Exception) -> str:
+        session_label = session.session_name or settings.telegram_session_name
+        return f"account {session_label}: {error}"
 
     async def _mark_account_used(self, account_id: int) -> None:
         async with async_session_factory() as session:
             await TelegramAccountRepository(session).mark_used(account_id)
+            await session.commit()
+
+    async def _mark_account_error(self, account_id: int, error: str) -> None:
+        async with async_session_factory() as session:
+            await TelegramAccountRepository(session).mark_error(account_id, error[:1000])
             await session.commit()
 
     async def _log_result(self, result: IsraelChannelDiscoveryResult) -> None:
@@ -433,9 +524,13 @@ class IsraelChannelDiscoverer:
                     "discovered_mentions": result.discovered_mentions,
                     "forwarded_mentions": result.forwarded_mentions,
                     "max_depth": result.max_depth,
+                    "min_views": result.min_views,
                     "channels_added": result.channels_added,
                     "channels_existing": result.channels_existing,
                     "channels_skipped": result.channels_skipped,
+                    "channels_without_open_comments": result.channels_without_open_comments,
+                    "channels_with_low_views": result.channels_with_low_views,
+                    "unusable_accounts": result.unusable_accounts,
                     "stopped_reason": result.stopped_reason,
                     "errors": result.errors[:20],
                 },
