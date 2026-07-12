@@ -1,5 +1,4 @@
 import logging
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from comments_ai_bot.core.config import settings
@@ -17,13 +16,11 @@ NOISY_LOGGERS = (
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 LOG_DIR = PROJECT_ROOT / "logs"
 LOG_FILE = LOG_DIR / "app.log"
-ISRAEL_DISCOVERY_LOG_FILE = LOG_DIR / "israel_discovery.log"
-ISRAEL_DISCOVERY_LOGGER = "comments_ai_bot.discovery"
 
 
-def _has_rotating_file_handler(logger: logging.Logger, log_file: Path) -> bool:
+def _has_file_handler(logger: logging.Logger, log_file: Path) -> bool:
     return any(
-        isinstance(handler, RotatingFileHandler)
+        isinstance(handler, logging.FileHandler)
         and Path(handler.baseFilename) == log_file.resolve()
         for handler in logger.handlers
     )
@@ -40,7 +37,7 @@ def setup_logging() -> None:
     formatter = logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT)
 
     has_console_handler = any(type(handler) is logging.StreamHandler for handler in root_logger.handlers)
-    has_file_handler = _has_rotating_file_handler(root_logger, LOG_FILE)
+    has_file_handler = _has_file_handler(root_logger, LOG_FILE)
 
     if not has_console_handler:
         console_handler = logging.StreamHandler()
@@ -49,32 +46,14 @@ def setup_logging() -> None:
         root_logger.addHandler(console_handler)
 
     if not has_file_handler:
-        file_handler = RotatingFileHandler(
-            LOG_FILE,
-            maxBytes=5 * 1024 * 1024,
-            backupCount=5,
-            encoding="utf-8",
-        )
+        file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
         file_handler.setFormatter(formatter)
         file_handler.setLevel(file_level)
         root_logger.addHandler(file_handler)
 
-    discovery_logger = logging.getLogger(ISRAEL_DISCOVERY_LOGGER)
-    discovery_logger.setLevel(logging.INFO)
-    if not _has_rotating_file_handler(discovery_logger, ISRAEL_DISCOVERY_LOG_FILE):
-        discovery_file_handler = RotatingFileHandler(
-            ISRAEL_DISCOVERY_LOG_FILE,
-            maxBytes=5 * 1024 * 1024,
-            backupCount=5,
-            encoding="utf-8",
-        )
-        discovery_file_handler.setFormatter(formatter)
-        discovery_file_handler.setLevel(logging.INFO)
-        discovery_logger.addHandler(discovery_file_handler)
-
     for handler in root_logger.handlers:
         if (
-            isinstance(handler, RotatingFileHandler)
+            isinstance(handler, logging.FileHandler)
             and Path(handler.baseFilename) == LOG_FILE.resolve()
         ):
             handler.setLevel(file_level)
