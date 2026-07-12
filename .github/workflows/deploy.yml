@@ -14,6 +14,7 @@ jobs:
   ci:
     name: Check project
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -27,6 +28,8 @@ jobs:
 
       - name: Install dependencies
         run: |
+          set -euo pipefail
+
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
@@ -39,15 +42,47 @@ jobs:
   deploy:
     name: Deploy to server
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: ci
     if: github.ref == 'refs/heads/main'
     environment: production
 
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/var/www/ComentsAIBot' }}
+      SERVICE_NAME: ${{ vars.SERVICE_NAME || 'comments-ai-bot' }}
+
     steps:
+      - name: Validate deployment settings
+        run: |
+          set -euo pipefail
+
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          test -n "$DEPLOY_PORT"
+          test -n "$DEPLOY_PATH"
+          test -n "$SERVICE_NAME"
+
+          case "$DEPLOY_PORT" in
+            ''|*[!0-9]*)
+              echo "DEPLOY_PORT must be a number"
+              exit 1
+              ;;
+          esac
+
+          echo "Deploy user: $DEPLOY_USER"
+          echo "Deploy port: $DEPLOY_PORT"
+          echo "Deploy path: $DEPLOY_PATH"
+          echo "Service name: $SERVICE_NAME"
+
       - name: Prepare SSH
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         run: |
+          set -euo pipefail
+
           test -n "$DEPLOY_SSH_KEY"
 
           mkdir -p ~/.ssh
@@ -56,62 +91,217 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
 
+          ssh-keygen -y \
+            -f ~/.ssh/deploy_key \
+            > ~/.ssh/deploy_key.pub
+
+          chmod 644 ~/.ssh/deploy_key.pub
+
           echo "Public key fingerprint from GitHub secret:"
-          ssh-keygen -y -f ~/.ssh/deploy_key > ~/.ssh/deploy_key.pub
           ssh-keygen -lf ~/.ssh/deploy_key.pub
 
-      - name: Test SSH connection
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+      - name: Add server to known hosts
         run: |
-          test -n "$DEPLOY_HOST"
-          test -n "$DEPLOY_USER"
-          test -n "$DEPLOY_PORT"
+          set -euo pipefail
 
-          ssh -o StrictHostKeyChecking=no \
-            -o BatchMode=yes \
-            -o IdentitiesOnly=yes \
-            -i ~/.ssh/deploy_key \
-            -p "$DEPLOY_PORT" \
-            "$DEPLOY_USER@$DEPLOY_HOST" \
-            "whoami && hostname"
+          touch ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+          for attempt in 1 2 3 4 5; do
+            echo "ssh-keyscan attempt $attempt of 5"
+
+            if timeout 30 ssh-keyscan \
+              -T 15 \
+              -p "$DEPLOY_PORT" \
+              -H "$DEPLOY_HOST" \
+              >> ~/.ssh/known_hosts; then
+              echo "Server host key added"
+              exit 0
+            fi
+
+            if [ "$attempt" -lt 5 ]; then
+              sleep $((attempt * 10))
+            fi
+          done
+
+          echo "Failed to receive SSH host key"
+          exit 1
+
+      - name: Wait for SSH port
+        run: |
+          set -euo pipefail
+
+          for attempt in 1 2 3 4 5; do
+            echo "SSH port check $attempt of 5"
+
+            if timeout 20 bash -c \
+              "cat < /dev/null > /dev/tcp/$DEPLOY_HOST/$DEPLOY_PORT"; then
+              echo "SSH port is reachable"
+              exit 0
+            fi
+
+            if [ "$attempt" -lt 5 ]; then
+              sleep $((attempt * 15))
+            fi
+          done
+
+          echo "SSH port is not reachable"
+          exit 1
+
+      - name: Test SSH connection
+        run: |
+          set -euo pipefail
+
+          for attempt in 1 2 3 4 5; do
+            echo "SSH connection attempt $attempt of 5"
+
+            if ssh \
+              -o BatchMode=yes \
+              -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=yes \
+              -o ConnectTimeout=30 \
+              -o ConnectionAttempts=3 \
+              -o ServerAliveInterval=15 \
+              -o ServerAliveCountMax=4 \
+              -i ~/.ssh/deploy_key \
+              -p "$DEPLOY_PORT" \
+              "$DEPLOY_USER@$DEPLOY_HOST" \
+              "whoami && hostname"; then
+              echo "SSH connection successful"
+              exit 0
+            fi
+
+            if [ "$attempt" -lt 5 ]; then
+              sleep $((attempt * 15))
+            fi
+          done
+
+          echo "SSH connection failed after 5 attempts"
+          exit 1
 
       - name: Deploy
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
-          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/var/www/ComentsAIBot' }}
-          SERVICE_NAME: ${{ vars.SERVICE_NAME || 'comments-ai-bot' }}
         run: |
-          test -n "$DEPLOY_HOST"
-          test -n "$DEPLOY_USER"
-          test -n "$DEPLOY_PORT"
-          test -n "$DEPLOY_PATH"
-          test -n "$SERVICE_NAME"
-
-          ssh -o StrictHostKeyChecking=no \
-            -o BatchMode=yes \
-            -o IdentitiesOnly=yes \
-            -i ~/.ssh/deploy_key \
-            -p "$DEPLOY_PORT" \
-            "$DEPLOY_USER@$DEPLOY_HOST" \
-            "DEPLOY_PATH='$DEPLOY_PATH' SERVICE_NAME='$SERVICE_NAME' bash -s" <<'EOF'
           set -euo pipefail
+
+          for attempt in 1 2 3; do
+            echo "Deployment attempt $attempt of 3"
+
+            if ssh \
+              -o BatchMode=yes \
+              -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=yes \
+              -o ConnectTimeout=30 \
+              -o ConnectionAttempts=3 \
+              -o ServerAliveInterval=15 \
+              -o ServerAliveCountMax=8 \
+              -i ~/.ssh/deploy_key \
+              -p "$DEPLOY_PORT" \
+              "$DEPLOY_USER@$DEPLOY_HOST" \
+              "DEPLOY_PATH='$DEPLOY_PATH' SERVICE_NAME='$SERVICE_NAME' bash -s" <<'EOF'
+          set -euo pipefail
+
+          echo "=== Deployment started ==="
+          echo "Host: $(hostname)"
+          echo "User: $(whoami)"
+          echo "Path: $DEPLOY_PATH"
+          echo "Service: $SERVICE_NAME"
+
+          if [ ! -d "$DEPLOY_PATH" ]; then
+            echo "Deploy directory does not exist: $DEPLOY_PATH"
+            exit 1
+          fi
 
           cd "$DEPLOY_PATH"
 
-          git pull --ff-only
+          if [ ! -d ".git" ]; then
+            echo "Directory is not a Git repository: $DEPLOY_PATH"
+            exit 1
+          fi
 
+          if [ ! -f ".venv/bin/activate" ]; then
+            echo "Virtual environment not found: $DEPLOY_PATH/.venv"
+            exit 1
+          fi
+
+          echo "=== Current revision ==="
+          git rev-parse --short HEAD
+
+          echo "=== Updating repository ==="
+          git fetch --prune origin
+          git checkout main
+          git reset --hard origin/main
+
+          echo "=== New revision ==="
+          git rev-parse --short HEAD
+
+          echo "=== Activating virtual environment ==="
           source .venv/bin/activate
 
+          echo "=== Updating Python tooling ==="
+          python -m pip install --upgrade pip
+
+          echo "=== Installing project ==="
           pip install -e .
 
+          echo "=== Running database migrations ==="
           alembic upgrade head
 
+          echo "=== Restarting service ==="
           systemctl restart "$SERVICE_NAME"
 
-          systemctl status "$SERVICE_NAME" --no-pager
+          echo "=== Waiting for service ==="
+          sleep 5
+
+          if ! systemctl is-active --quiet "$SERVICE_NAME"; then
+            echo "Service failed to start"
+
+            systemctl status "$SERVICE_NAME" \
+              --no-pager \
+              --full || true
+
+            journalctl \
+              -u "$SERVICE_NAME" \
+              -n 100 \
+              --no-pager || true
+
+            exit 1
+          fi
+
+          echo "=== Service status ==="
+          systemctl status "$SERVICE_NAME" \
+            --no-pager \
+            --full
+
+          echo "=== Deployment completed successfully ==="
           EOF
+            then
+              echo "Deployment completed successfully"
+              exit 0
+            fi
+
+            echo "Deployment attempt $attempt failed"
+
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 20))
+            fi
+          done
+
+          echo "Deployment failed after 3 attempts"
+          exit 1
+
+      - name: Show server logs after failure
+        if: failure()
+        continue-on-error: true
+        run: |
+          ssh \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 \
+            -o ServerAliveInterval=10 \
+            -o ServerAliveCountMax=2 \
+            -i ~/.ssh/deploy_key \
+            -p "$DEPLOY_PORT" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "systemctl status '$SERVICE_NAME' --no-pager --full || true;
+             journalctl -u '$SERVICE_NAME' -n 100 --no-pager || true"
